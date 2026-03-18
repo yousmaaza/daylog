@@ -304,21 +304,20 @@ function Timeline({ allTasks, days, viewMode, now, timelineScrollRef }) {
 
   return (
     <div className={`panel-timeline${isWeek ? ' panel-timeline--week' : ''}`}>
-      {isWeek && (
-        <div className="timeline-header-week">
-          <div className="timeline-hour-label-spacer" />
-          <div className="timeline-days-wrapper">
-            {days.map(d => (
-              <div key={d.key} className={`timeline-day-hdr ${d.key === todayKey ? 'timeline-day-hdr--today' : ''}`} onClick={() => {}}>
-                <span className="hdr-short">{d.shortLabel}</span>
-                <span className="hdr-num">{d.dayNum}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-      
       <div className="timeline-scroll" ref={timelineScrollRef}>
+        {isWeek && (
+          <div className="timeline-header-week">
+            <div className="timeline-hour-label-spacer" />
+            <div className="timeline-days-wrapper">
+              {days.map(d => (
+                <div key={d.key} className={`timeline-day-hdr ${d.key === todayKey ? 'timeline-day-hdr--today' : ''}`}>
+                  <span className="hdr-short">{d.shortLabel}</span>
+                  <span className="hdr-num">{d.dayNum}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="timeline-inner" style={{ height: (TIMELINE_END - TIMELINE_START) * HOUR_H }}>
 
           {/* Hour grid */}
@@ -575,6 +574,18 @@ export default function App() {
     return () => clearInterval(id)
   }, [])
 
+  // ── Tab Title Timer ────────────────────────────────────────────────────────
+  useEffect(() => {
+    const todayTasks = tasks[toKey(new Date())] ?? []
+    const activeTask = todayTasks.find(t => getTaskStatus(t) === 'active')
+    if (activeTask) {
+      const ms = getTotalMs(activeTask, Date.now())
+      document.title = `▶ [${formatLive(ms)}] ${activeTask.name} - Daylog`
+    } else {
+      document.title = 'Daylog'
+    }
+  }, [tasks, tick])
+
   // ── Persist ────────────────────────────────────────────────────────────────
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks))
@@ -663,27 +674,19 @@ export default function App() {
     const now = Date.now()
     setTasks(prev => {
       const dayTasks = prev[selDate] ?? []
-      // Find the latest endTime across all finished sessions of the day
-      let latestEnd = 0
-      dayTasks.forEach(t => {
-        t.sessions.forEach(s => {
-          if (s.endTime && s.endTime > latestEnd) latestEnd = s.endTime
-        })
-      })
-      // New session starts at latestEnd (chained) or now if nothing finished yet
-      const startTime = latestEnd > 0 ? latestEnd : now
 
       return {
         ...prev,
         [selDate]: dayTasks.map(t => {
           if (t.id === id) {
-            const sessions = t.sessions.map(s => s.endTime ? s : { ...s, endTime: startTime })
-            return { ...t, sessions: [...sessions, { id: uid(), startTime, endTime: null }], done: false }
+            // Close any open session on this task, open a new one starting now
+            const sessions = t.sessions.map(s => s.endTime ? s : { ...s, endTime: now })
+            return { ...t, sessions: [...sessions, { id: uid(), startTime: now, endTime: null }], done: false }
           }
-          // Pause any other running task, ending at the same startTime
+          // Pause any other running task
           const hasLive = t.sessions.some(s => !s.endTime)
           if (hasLive) {
-            return { ...t, sessions: t.sessions.map(s => s.endTime ? s : { ...s, endTime: startTime }) }
+            return { ...t, sessions: t.sessions.map(s => s.endTime ? s : { ...s, endTime: now }) }
           }
           return t
         }),
@@ -901,7 +904,7 @@ export default function App() {
                       )}
                       {status === 'active' && (
                         <>
-                          <button className="btn" onClick={() => pauseTask(task.id)}>
+                          <button className="btn" onClick={() => { pauseTask(task.id); setSelTaskId(task.id) }}>
                             ⏸ Pause
                           </button>
                           <button className="btn btn--done" onClick={() => doneTask(task.id)}>
