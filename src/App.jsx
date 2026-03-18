@@ -20,6 +20,16 @@ const TASK_PALETTE = [
   { bg: 'rgba(251,113,133,0.18)',border: 'rgba(251,113,133,0.5)',dot: '#fb7185' },  // rose
 ]
 
+const TAGS = [
+  { id: 'work',        emoji: '💼', label: 'Work',         color: '#3b82f6' },
+  { id: 'learning',    emoji: '📚', label: 'Learning',     color: '#8b5cf6' },
+  { id: 'sport',       emoji: '🏃', label: 'Sport',        color: '#10b981' },
+  { id: 'hobby',       emoji: '🎮', label: 'Hobby',        color: '#ec4899' },
+  { id: 'lunch',       emoji: '🍽️', label: 'Lunch/Dinner', color: '#f97316' },
+  { id: 'pause',       emoji: '☕', label: 'Pause',        color: '#a8a29e' },
+  { id: 'commute',     emoji: '🚌', label: 'Commute',      color: '#6b7280' },
+]
+
 const DAY_SHORT  = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 const DAY_FULL   = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 const MONTH_FULL = [
@@ -560,6 +570,8 @@ export default function App() {
   const [inputValue, setInputValue] = useState('')
   const [tick, setTick]             = useState(0)
   const [timelineView, setTimelineView] = useState('day')
+  const [editingTaskId, setEditingTaskId] = useState(null)
+  const [editingName, setEditingName] = useState('')
 
   const inputRef         = useRef(null)
   const timelineScrollRef = useRef(null)
@@ -707,6 +719,12 @@ export default function App() {
       sessions: t.sessions.map(s => s.endTime ? s : { ...s, endTime: Date.now() }),
       done: true,
     }))
+  }, [updateTask])
+
+  const renameTask = useCallback((id, newName) => {
+    const trimmed = newName.trim()
+    if (!trimmed) return
+    updateTask(id, t => ({ ...t, name: trimmed }))
   }, [updateTask])
 
   const deleteTask = useCallback((id) => {
@@ -886,7 +904,27 @@ export default function App() {
                 >
                   <div className="task-card-top">
                     <span className="status-dot" style={{ background: taskPalette.dot }} />
-                    <span className="task-card-name">{task.name}</span>
+                    {editingTaskId === task.id ? (
+                      <input
+                        className="task-rename-input"
+                        value={editingName}
+                        autoFocus
+                        onChange={e => setEditingName(e.target.value)}
+                        onBlur={() => { renameTask(task.id, editingName); setEditingTaskId(null) }}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') { renameTask(task.id, editingName); setEditingTaskId(null) }
+                          if (e.key === 'Escape') setEditingTaskId(null)
+                        }}
+                        onClick={e => e.stopPropagation()}
+                      />
+                    ) : (
+                      <span
+                        className="task-card-name"
+                        onDoubleClick={e => { e.stopPropagation(); setEditingTaskId(task.id); setEditingName(task.name) }}
+                        title="Double-cliquez pour renommer"
+                      >{task.name}</span>
+                    )}
+                    {task.tag && (() => { const t = TAGS.find(t => t.id === task.tag); return t ? <span className="task-tag-badge" style={{ background: t.color + '26', color: t.color, border: `1px solid ${t.color}55` }}>{t.emoji} {t.label}</span> : null })()}
                   </div>
                   <div className="task-card-meta" style={{ color: taskPalette.dot }}>{metaText}</div>
 
@@ -920,6 +958,20 @@ export default function App() {
                       <button className="btn btn--delete" onClick={() => deleteTask(task.id)}>
                         ✕
                       </button>
+
+                      {/* Tag picker */}
+                      <div className="tag-picker" onClick={e => e.stopPropagation()}>
+                        {TAGS.map(tag => (
+                          <button
+                            key={tag.id}
+                            className={`tag-btn${task.tag === tag.id ? ' tag-btn--active' : ''}`}
+                            style={task.tag === tag.id ? { background: tag.color + '26', color: tag.color, borderColor: tag.color + '88' } : {}}
+                            onClick={() => updateTask(task.id, t => ({ ...t, tag: t.tag === tag.id ? null : tag.id }))}
+                          >
+                            {tag.emoji} {tag.label}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </div>
