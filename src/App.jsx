@@ -199,21 +199,24 @@ function buildColumns(blocks) {
   })
 }
 
-function Timeline({ tasks, selDate, now, timelineScrollRef }) {
-  const isToday = selDate === toKey(new Date())
+function Timeline({ allTasks, days, viewMode, now, timelineScrollRef }) {
+  const isWeek = viewMode === 'week'
+  const todayKey = toKey(new Date())
 
   // current time position
   const nowDate = new Date(now)
   const nowHours = nowDate.getHours() + nowDate.getMinutes() / 60 + nowDate.getSeconds() / 3600
   const nowTop = (nowHours - TIMELINE_START) * HOUR_H
 
-  // build session blocks from all tasks for this day
+  // build session blocks from all tasks for the selected days
   const rawBlocks = useMemo(() => {
     const blocks = []
-    tasks.forEach((task, taskIdx) => {
-      const status = getTaskStatus(task)
-      const colorIdx = taskIdx % TASK_PALETTE.length
-      task.sessions.forEach(sess => {
+    days.forEach((day, dayIndex) => {
+      const dayTasks = allTasks[day.key] ?? []
+      dayTasks.forEach((task, taskIdx) => {
+        const status = getTaskStatus(task)
+        const colorIdx = task.colorIdx ?? (taskIdx % TASK_PALETTE.length)
+        task.sessions.forEach(sess => {
         const start = new Date(sess.startTime)
         const end   = sess.endTime ? new Date(sess.endTime) : new Date(now)
         const startH = start.getHours() + start.getMinutes() / 60 + start.getSeconds() / 3600
@@ -238,27 +241,36 @@ function Timeline({ tasks, selDate, now, timelineScrollRef }) {
           realEndY  = startY + rawH  // true end, no minimum — used for column slot tracking
         }
 
-        const blockId = sess.id ?? `${task.id}-${sess.startTime}`
-        blocks.push({
-          id: blockId,
-          taskId: task.id,
-          name: task.name,
-          status,
-          colorIdx,
-          isLive: !sess.endTime,
-          startY,
-          endY,
-          realEndY,
-          height,
-          startTime: sess.startTime,
-          endTime: sess.endTime,
+          const blockId = sess.id ? `${sess.id}` : `${task.id}-${sess.startTime}`
+          blocks.push({
+            id: blockId,
+            taskId: task.id,
+            name: task.name,
+            status,
+            colorIdx,
+            isLive: !sess.endTime,
+            startY,
+            endY,
+            realEndY,
+            height,
+            startTime: sess.startTime,
+            endTime: sess.endTime,
+            dayIndex,
+          })
         })
       })
     })
     return blocks
-  }, [tasks, now])
+  }, [allTasks, days, now])
 
-  const blocksWithCols = useMemo(() => buildColumns(rawBlocks), [rawBlocks])
+  const blocksWithCols = useMemo(() => {
+    const result = []
+    days.forEach((_, dayIndex) => {
+      const dayBlocks = rawBlocks.filter(b => b.dayIndex === dayIndex)
+      result.push(...buildColumns(dayBlocks))
+    })
+    return result
+  }, [rawBlocks, days])
 
   // Per-column display layout: stack blocks vertically with MIN_DISPLAY_H minimum
   // so short sessions don't visually overlap
@@ -274,8 +286,8 @@ function Timeline({ tasks, selDate, now, timelineScrollRef }) {
   // compute max col count per time bucket to determine widths
   const numColsForBlock = useMemo(() => {
     return blocksWithCols.map(block => {
-      // count how many blocks truly overlap (using real durations, not min-height)
       const overlapping = blocksWithCols.filter(b =>
+        b.dayIndex === block.dayIndex &&
         b.startY < block.realEndY - 0.5 && b.realEndY > block.startY + 0.5
       )
       return Math.max(...overlapping.map(b => b.col + 1), 1)
@@ -291,7 +303,21 @@ function Timeline({ tasks, selDate, now, timelineScrollRef }) {
   }, [])
 
   return (
-    <div className="panel-timeline">
+    <div className={`panel-timeline${isWeek ? ' panel-timeline--week' : ''}`}>
+      {isWeek && (
+        <div className="timeline-header-week">
+          <div className="timeline-hour-label-spacer" />
+          <div className="timeline-days-wrapper">
+            {days.map(d => (
+              <div key={d.key} className={`timeline-day-hdr ${d.key === todayKey ? 'timeline-day-hdr--today' : ''}`} onClick={() => {}}>
+                <span className="hdr-short">{d.shortLabel}</span>
+                <span className="hdr-num">{d.dayNum}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      
       <div className="timeline-scroll" ref={timelineScrollRef}>
         <div className="timeline-inner" style={{ height: (TIMELINE_END - TIMELINE_START) * HOUR_H }}>
 
@@ -313,10 +339,21 @@ function Timeline({ tasks, selDate, now, timelineScrollRef }) {
 
           {/* Session blocks + start-time labels */}
           <div className="timeline-blocks">
+            {/* Vertical dividers for week view */}
+            {isWeek && days.map((_, i) => i > 0 && (
+              <div key={`div-${i}`} className="timeline-day-divider" style={{ left: `${i * (100 / days.length)}%` }} />
+            ))}
+            
             {blocksWithCols.flatMap((block, idx) => {
               const numCols   = numColsForBlock[idx]
-              const leftPct   = numCols > 1 ? `calc(${(block.col / numCols) * 100}% + ${block.col * 2}px)` : '2px'
-              const widthPct  = numCols > 1 ? `calc(${100 / numCols}% - ${block.col * 2 + 4}px)` : 'calc(100% - 4px)'
+              
+              const dayLeft = block.dayIndex * (100 / days.length)
+              const dayWidth = 100 / days.length
+              const colWidth = dayWidth / numCols
+              const colLeft = dayLeft + (block.col * colWidth)
+              
+              const leftPct   = `calc(${colLeft}% + 2px)`
+              const widthPct  = `calc(${colWidth}% - 4px)`
               const sessionMs = block.endTime ? block.endTime - block.startTime : now - block.startTime
               const display = displayBlocks[block.id] ?? { displayTop: block.startY, displayHeight: block.height }
               const { displayTop, displayHeight } = display
@@ -329,7 +366,7 @@ function Timeline({ tasks, selDate, now, timelineScrollRef }) {
                   <div
                     key={`ptr-${block.id}`}
                     className="session-pointer"
-                    style={{ top: Math.max(displayTop - 22, 2), left: leftPct, width: widthPct }}
+                    style={{ top: nowTop + 4, left: leftPct, width: widthPct }}
                   >
                     <span className="sp-dot" style={{ background: palette.dot, boxShadow: `0 0 0 3px ${palette.border}` }} />
                     <span className="sp-name">{block.name}</span>
@@ -370,18 +407,30 @@ function Timeline({ tasks, selDate, now, timelineScrollRef }) {
 
               return elems
             })}
+            {/* Current time line (today only) */}
+            {days.map((day, i) => {
+              if (day.key !== todayKey) return null
+              if (nowTop < 0 || nowTop > (TIMELINE_END - TIMELINE_START) * HOUR_H) return null
+              
+              const dayLeft = i * (100 / days.length)
+              const dayWidth = 100 / days.length
+              
+              return (
+                <div
+                  key={`now-${day.key}`}
+                  className="timeline-now-line"
+                  style={{ 
+                    top: nowTop,
+                    left: `${dayLeft}%`,
+                    width: `${dayWidth}%`
+                  }}
+                >
+                  <div className="timeline-now-dot" style={{ left: '-4px' }} />
+                </div>
+              )
+            })}
           </div>
-
-          {/* Current time line (today only) */}
-          {isToday && nowTop >= 0 && nowTop <= (TIMELINE_END - TIMELINE_START) * HOUR_H && (
-            <div
-              className="timeline-now-line"
-              style={{ top: nowTop }}
-            >
-              <div className="timeline-now-dot" />
-            </div>
-          )}
-        </div>
+          </div>
       </div>
     </div>
   )
@@ -389,18 +438,50 @@ function Timeline({ tasks, selDate, now, timelineScrollRef }) {
 
 // ── Right Panel ───────────────────────────────────────────────────────────────
 
-function RightPanel({ tasks, now }) {
+function RightPanel({ allTasks, selDate, now, weekStart }) {
+  const [viewMode, setViewMode] = useState('day')
+
+  let tasks = []
+  if (viewMode === 'day') {
+    tasks = allTasks[selDate] ?? []
+  } else if (viewMode === 'week') {
+    for (let i = 0; i < 7; i++) {
+      const d = addDays(weekStart, i)
+      tasks.push(...(allTasks[toKey(d)] ?? []))
+    }
+  } else if (viewMode === 'month') {
+    const selDateObj = new Date(selDate + 'T12:00:00')
+    const year = selDateObj.getFullYear()
+    const month = selDateObj.getMonth()
+    Object.keys(allTasks).forEach(key => {
+      const [y, m, d] = key.split('-')
+      if (parseInt(y) === year && parseInt(m) - 1 === month) {
+        tasks.push(...allTasks[key])
+      }
+    })
+  }
+
   const done   = tasks.filter(t => t.done).length
   const active = tasks.filter(t => getTaskStatus(t) === 'active').length
   const idle   = tasks.filter(t => getTaskStatus(t) === 'idle').length
   const total  = tasks.length
 
   const totalTrackedMs = tasks.reduce((acc, t) => acc + getTotalMs(t, now), 0)
-  const activeTask = tasks.find(t => getTaskStatus(t) === 'active')
+  
+  // The truly active task is theoretically from 'today'. We can just search all tasks to find the active one.
+  let activeTask = null
+  const todayTasks = allTasks[toKey(new Date())] ?? []
+  activeTask = todayTasks.find(t => getTaskStatus(t) === 'active')
   const activeDuration = activeTask ? formatLive(getTotalMs(activeTask, now)) : '—'
 
   return (
     <div className="panel-right">
+      <div className="view-toggle">
+        <button className={`toggle-btn${viewMode === 'day' ? ' toggle-btn--active' : ''}`} onClick={() => setViewMode('day')}>Day</button>
+        <button className={`toggle-btn${viewMode === 'week' ? ' toggle-btn--active' : ''}`} onClick={() => setViewMode('week')}>Week</button>
+        <button className={`toggle-btn${viewMode === 'month' ? ' toggle-btn--active' : ''}`} onClick={() => setViewMode('month')}>Month</button>
+      </div>
+
       <DonutChart done={done} active={active} idle={idle} />
 
       <div className="legend">
@@ -458,6 +539,20 @@ export default function App() {
     return {}
   })
 
+  // ── Theme State ────────────────────────────────────────────────────────────
+  const [darkMode, setDarkMode] = useState(() => {
+    try {
+      return localStorage.getItem('dl-theme') === 'dark' || false
+    } catch {}
+    return false
+  })
+
+  useEffect(() => {
+    localStorage.setItem('dl-theme', darkMode ? 'dark' : 'light')
+    if (darkMode) document.documentElement.setAttribute('data-theme', 'dark')
+    else document.documentElement.removeAttribute('data-theme')
+  }, [darkMode])
+
   // ── UI state ───────────────────────────────────────────────────────────────
   const todayKey = toKey(new Date())
   const [selDate, setSelDate]       = useState(todayKey)
@@ -465,9 +560,14 @@ export default function App() {
   const [selTaskId, setSelTaskId]   = useState(null)
   const [inputValue, setInputValue] = useState('')
   const [tick, setTick]             = useState(0)
+  const [timelineView, setTimelineView] = useState('day')
 
   const inputRef         = useRef(null)
   const timelineScrollRef = useRef(null)
+  
+  // Drag and drop refs
+  const dragItem = useRef(null)
+  const dragOverItem = useRef(null)
 
   // ── 1-second tick ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -537,11 +637,13 @@ export default function App() {
   const addTask = useCallback(() => {
     const name = inputValue.trim()
     if (!name) return
+    const currentDayTasks = tasks[selDate] ?? []
     const task = {
       id: uid(),
       name,
       sessions: [],
       done: false,
+      colorIdx: currentDayTasks.length % TASK_PALETTE.length,
       createdAt: Date.now(),
     }
     setTasks(prev => ({ ...prev, [selDate]: [...(prev[selDate] ?? []), task] }))
@@ -612,6 +714,23 @@ export default function App() {
     setSelTaskId(prev => (prev === id ? null : prev))
   }, [selDate])
 
+  const handleSort = useCallback(() => {
+    const currentTasks = [...(tasks[selDate] ?? [])].map((t, i) => ({
+      ...t,
+      colorIdx: t.colorIdx ?? (i % TASK_PALETTE.length)
+    }))
+    const draggedItemContent = currentTasks.splice(dragItem.current, 1)[0]
+    currentTasks.splice(dragOverItem.current, 0, draggedItemContent)
+    
+    dragItem.current = null
+    dragOverItem.current = null
+    
+    setTasks(prev => ({
+      ...prev,
+      [selDate]: currentTasks
+    }))
+  }, [selDate, tasks])
+
   // ── Selected day display info ───────────────────────────────────────────────
   const selDateObj  = new Date(selDate + 'T12:00:00')
   const selDayName  = DAY_FULL[selDateObj.getDay()]
@@ -664,8 +783,16 @@ export default function App() {
           <button className="nav-arrow" onClick={nextWeek} title="Next week">&#8250;</button>
         </nav>
 
-        {/* Today button */}
+        {/* Today button & Timeline Toggle */}
         <div className="header-actions">
+          <button className="btn-icon" onClick={() => setDarkMode(d => !d)} title="Toggle Dark Mode" style={{ border: 'none', background: 'transparent', fontSize: '18px', cursor: 'pointer', marginRight: '16px' }}>
+            {darkMode ? '☀️' : '🌙'}
+          </button>
+          
+          <div className="view-toggle" style={{ marginBottom: 0, marginRight: '10px' }}>
+            <button className={`toggle-btn${timelineView === 'day' ? ' toggle-btn--active' : ''}`} onClick={() => setTimelineView('day')}>Day</button>
+            <button className={`toggle-btn${timelineView === 'week' ? ' toggle-btn--active' : ''}`} onClick={() => setTimelineView('week')}>Week</button>
+          </div>
           <button
             className={`btn-today${isToday ? ' btn-today--active' : ''}`}
             onClick={goToday}
@@ -720,7 +847,7 @@ export default function App() {
               const status    = getTaskStatus(task)
               const totalMs   = getTotalMs(task, now)
               const isExpanded = selTaskId === task.id
-              const taskPalette = TASK_PALETTE[i % TASK_PALETTE.length]
+              const taskPalette = TASK_PALETTE[task.colorIdx ?? (i % TASK_PALETTE.length)]
 
               // timer display
               let metaText = 'not started'
@@ -740,6 +867,19 @@ export default function App() {
                   ].filter(Boolean).join(' ')}
                   style={{ animationDelay: `${i * 0.035}s` }}
                   onClick={() => setSelTaskId(prev => prev === task.id ? null : task.id)}
+                  draggable
+                  onDragStart={(e) => {
+                    dragItem.current = i
+                    e.currentTarget.style.opacity = '0.5'
+                  }}
+                  onDragEnter={(e) => {
+                    dragOverItem.current = i
+                  }}
+                  onDragEnd={(e) => {
+                    e.currentTarget.style.opacity = '1'
+                    handleSort()
+                  }}
+                  onDragOver={(e) => e.preventDefault()}
                 >
                   <div className="task-card-top">
                     <span className="status-dot" style={{ background: taskPalette.dot }} />
@@ -787,14 +927,15 @@ export default function App() {
 
         {/* ── TIMELINE ───────────────────────────────────────────────────── */}
         <Timeline
-          tasks={dayTasks}
-          selDate={selDate}
+          allTasks={tasks}
+          days={timelineView === 'week' ? weekDays : [weekDays.find(d => d.key === selDate) ?? { key: selDate, shortLabel: DAY_SHORT[new Date(selDate).getDay()], dayNum: new Date(selDate).getDate() }]}
+          viewMode={timelineView}
           now={now}
           timelineScrollRef={timelineScrollRef}
         />
 
         {/* ── RIGHT PANEL ────────────────────────────────────────────────── */}
-        <RightPanel tasks={dayTasks} now={now} />
+        <RightPanel allTasks={tasks} selDate={selDate} now={now} weekStart={weekStart} />
 
       </div>
     </div>
