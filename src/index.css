@@ -1034,6 +1034,11 @@ body {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
+[data-theme='dark'] .toggle-btn--active {
+  background: var(--bg-selected);
+  color: #FFFFFF;
+}
+
 /* ── Donut Chart ───────────────────────────────────────────────────────── */
 
 .donut-wrap {
