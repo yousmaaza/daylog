@@ -225,7 +225,7 @@ function Timeline({ tasks, selDate, now, timelineScrollRef }) {
         let height, endY, realEndY
         if (!sess.endTime) {
           // Live block: bottom always aligns with the current-time (red) line
-          const liveEndY = Math.max(nowTop, startY + 2)
+          const liveEndY = Math.max(nowTop, startY)
           height    = liveEndY - startY
           endY      = liveEndY
           realEndY  = liveEndY
@@ -263,24 +263,10 @@ function Timeline({ tasks, selDate, now, timelineScrollRef }) {
   // Per-column display layout: stack blocks vertically with MIN_DISPLAY_H minimum
   // so short sessions don't visually overlap
   const displayBlocks = useMemo(() => {
-    const MIN_DISPLAY_H = 24
-    // Group by column
-    const colMap = {}
-    blocksWithCols.forEach(b => {
-      if (!colMap[b.col]) colMap[b.col] = []
-      colMap[b.col].push(b)
-    })
-    // For each column, sort by startY and compute stacked display positions
     const result = {}
-    Object.entries(colMap).forEach(([col, blocks]) => {
-      const sorted = [...blocks].sort((a, b) => a.startY - b.startY)
-      let prevBottom = -Infinity
-      sorted.forEach(block => {
-        const displayTop    = Math.max(block.startY, prevBottom + 1)
-        const displayHeight = Math.max(block.height, MIN_DISPLAY_H)
-        prevBottom = displayTop + displayHeight
-        result[block.id] = { displayTop, displayHeight }
-      })
+    blocksWithCols.forEach(block => {
+      // Map strictly to real time passed, no artificial padding or pushing down
+      result[block.id] = { displayTop: block.startY, displayHeight: block.isLive ? block.height : Math.max(block.height, 2) }
     })
     return result
   }, [blocksWithCols])
@@ -362,14 +348,14 @@ function Timeline({ tasks, selDate, now, timelineScrollRef }) {
               elems.push(
                 <div
                   key={block.id}
-                  className={`session-block${tooltipLabel ? ' session-block--short' : ''}`}
+                  className={`session-block${tooltipLabel ? ' session-block--short' : ''}${block.isLive ? ' session-block--live' : ''}`}
                   data-tooltip={tooltipLabel}
                   style={{
                     top:        displayTop,
                     height:     displayHeight,
                     left:       leftPct,
                     width:      widthPct,
-                    background: palette.bg,
+                    background: block.isLive ? palette.dot : palette.bg,
                     border:     `1px solid ${palette.border}`,
                   }}
                 >

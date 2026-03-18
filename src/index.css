@@ -614,7 +614,12 @@ body {
   padding: 4px 6px;
   pointer-events: auto;
   cursor: default;
+  z-index: 2;
   /* min-height controlled via inline style per block type */
+}
+
+.session-block--live {
+  padding: 0;
 }
 
 .session-block--idle {
@@ -693,6 +698,8 @@ body {
 .session-block--short {
   pointer-events: auto;
   overflow: visible;
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 .session-block--short::after {
@@ -750,7 +757,7 @@ body {
   right: 0;
   height: 1px;
   background: #EF4444;
-  z-index: 5;
+  z-index: 0;
   pointer-events: none;
 }
 
