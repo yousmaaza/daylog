@@ -13,14 +13,15 @@ const TEMPLATES_KEY  = 'dl-templates'
 // ── Tags ─────────────────────────────────────────────────────────────────────
 
 const DEFAULT_TAGS = [
-  { id: 'work',     label: 'Work',     color: '#B45309', bg: '#FEF3C7' },
-  { id: 'sport',    label: 'Sport',    color: '#047857', bg: '#D1FAE5' },
-  { id: 'personal', label: 'Personal', color: '#6D28D9', bg: '#EDE9FE' },
-  { id: 'health',   label: 'Health',   color: '#0369A1', bg: '#E0F2FE' },
-  { id: 'study',    label: 'Study',    color: '#9333EA', bg: '#F3E8FF' },
-  { id: 'home',     label: 'Home',     color: '#C2410C', bg: '#FFF7ED' },
-  { id: 'shopping', label: 'Shopping', color: '#BE185D', bg: '#FCE7F3' },
-  { id: 'other',    label: 'Other',    color: '#4B5563', bg: '#F3F4F6' },
+  { id: 'work',         label: 'Work',         color: '#FFFFFF', bg: '#EDE9FF', border: '#D4CAFC', dot: '#7C5CFC', textColor: '#4C2FB0' },
+  { id: 'sport',        label: 'Sport',        color: '#FFFFFF', bg: '#D1FAE5', border: '#A7F3D0', dot: '#10B981', textColor: '#065F46' },
+  { id: 'meeting',      label: 'Meeting',      color: '#FFFFFF', bg: '#FFF4D6', border: '#FFE9A0', dot: '#F59E0B', textColor: '#92400E' },
+  { id: 'lunch_dinner', label: 'Lunch/Dinner', color: '#FFFFFF', bg: '#E0F7FF', border: '#BAE6FD', dot: '#38BDF8', textColor: '#0369A1' },
+  { id: 'commute',      label: 'Commute',      color: '#FFFFFF', bg: '#E0F2FE', border: '#BAE0FF', dot: '#06B6D4', textColor: '#0E7490' },
+  { id: 'study',        label: 'Study',        color: '#FFFFFF', bg: '#FCE7F3', border: '#F9C4E0', dot: '#EC4899', textColor: '#9D174D' },
+  { id: 'home',         label: 'Home',         color: '#FFFFFF', bg: '#FFE4E1', border: '#FFCDC8', dot: '#F97316', textColor: '#9A3412' },
+  { id: 'personal',     label: 'Personal',     color: '#FFFFFF', bg: '#FFE8F3', border: '#FFC6E4', dot: '#F472B6', textColor: '#BE185D' },
+  { id: 'other',        label: 'Other',        color: '#FFFFFF', bg: '#F5F3FF', border: '#E8E3FF', dot: '#8078A0', textColor: '#5A527A' },
 ]
 
 // ── Per-task color palette ────────────────────────────────────────────────────
@@ -149,7 +150,7 @@ function LoginScreen({ onLogin }) {
       <div className="login-card">
         {/* Brand */}
         <div className="login-brand">
-          <span className="login-brand-text">DAYLOG</span>
+          <span className="login-brand-text">ECHO</span>
           <span className="login-brand-dot" />
         </div>
         <p className="login-tagline">Track your time,<br />one task at a time.</p>
@@ -214,9 +215,108 @@ function LoginScreen({ onLogin }) {
   )
 }
 
-// ── Donut Chart (pure SVG) ───────────────────────────────────────────────────
+// ── Analytics Components ─────────────────────────────────────────────────────
 
-function DonutChart({ done, active, idle }) {
+
+function Heatmap({ allTasks, now, mode, selDate }) {
+  const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+  try {
+    const dCount = mode === 'day' ? 1 : 7
+    const days = Array(dCount).fill(0).map(() => Array(24).fill(0))
+    const nowRef = now ? new Date(now) : new Date()
+
+    if (mode === 'month') {
+      const selDateObj = new Date(selDate + 'T12:00:00')
+      const year = selDateObj.getFullYear()
+      const month = selDateObj.getMonth()
+      
+      Object.keys(allTasks).forEach(k => {
+        const [y, m, d] = k.split('-').map(Number)
+        if (y === year && m - 1 === month) {
+          const date = new Date(y, m - 1, d)
+          // JS scale: 0=Sun, 1=Mon...6=Sat => Map to 0=Mon...6=Sun
+          const dayIdx = (date.getDay() + 6) % 7
+          const tasks = allTasks[k] ?? []
+          tasks.forEach(t => {
+            (t.sessions ?? []).forEach(s => {
+              const start = new Date(s.startTime).getHours()
+              const end   = new Date(s.endTime || nowRef).getHours()
+              for (let h = Math.max(0, start); h <= Math.min(23, end); h++) {
+                days[dayIdx][h] = (days[dayIdx][h] || 0) + 1
+              }
+            })
+          })
+        }
+      })
+    } else {
+      for (let i = 0; i < dCount; i++) {
+        const targetDate = new Date(nowRef)
+        if (mode !== 'day') targetDate.setDate(targetDate.getDate() - (dCount - 1 - i))
+        const key = mode === 'day' ? selDate : toKey(targetDate)
+        const tasks = allTasks?.[key] ?? []
+        tasks.forEach(t => {
+          (t.sessions ?? []).forEach(s => {
+            const sT = Number(s.startTime)
+            const eT = Number(s.endTime || nowRef)
+            if (!sT || isNaN(sT) || isNaN(eT)) return
+            const start = new Date(sT).getHours()
+            const end   = new Date(eT).getHours()
+            for (let h = Math.max(0, start); h <= Math.min(23, end); h++) {
+              days[i][h] = (days[i][h] || 0) + 1
+            }
+          })
+        })
+      }
+    }
+
+    const flat = days.flat()
+    const max = Math.max(...flat, 1)
+
+    // DEBUG: console.log('Heatmap Data', { mode, key, val: flat.filter(v => v > 0) })
+
+    return (
+      <div className="heatmap-wrap" data-mode={mode}>
+        <div className="right-section-title">{mode === 'day' ? 'Daily Rhythm' : 'Weekly Pulse'}</div>
+        <div className={mode === 'day' ? 'heatmap-grid-1d' : 'heatmap-grid-7d'}>
+          {days.map((row, dIdx) => (
+            <div key={dIdx} style={{ display: 'contents' }}>
+              {mode !== 'day' && (
+                <div className="heatmap-row-header">
+                  <span className="heatmap-day-label">
+                    {mode === 'month' ? dayNames[dIdx] : dayNames[(nowRef.getDay() - (6 - dIdx) + 6) % 7]}
+                  </span>
+                </div>
+              )}
+              {row.map((v, hIdx) => {
+                const opacity = 0.08 + (Math.min(v, max) / max) * 0.92
+                return (
+                  <div 
+                    key={hIdx} 
+                    className="heatmap-cell" 
+                    style={{ 
+                      opacity, 
+                      background: v > 0 ? 'var(--amber)' : 'rgba(124, 92, 252, 0.14)',
+                      height: mode === 'day' ? '18px' : '9px'
+                    }} 
+                    title={`${hIdx}h: ${v} sessions`}
+                  />
+                )
+              })}
+            </div>
+          ))}
+        </div>
+        <div className="heatmap-labels">
+          <span style={{ marginLeft: mode === 'day' ? '0' : '24px' }}>0h</span>
+          <span>6h</span><span>12h</span><span>18h</span><span>23h</span>
+        </div>
+      </div>
+    )
+  } catch (err) {
+    return <div className="profile-empty">Stats unavailable</div>
+  }
+}
+
+function DonutChart({ data, totalMs }) {
   const size = 120
   const r = size * 0.36
   const sw = size * 0.14
@@ -224,49 +324,40 @@ function DonutChart({ done, active, idle }) {
   const cx = size / 2
   const cy = size / 2
 
-  const total = done + active + idle
-  const safeTotal = total === 0 ? 1 : total
+  const safeTotal = totalMs === 0 ? 1 : totalMs
+  const trackColor = 'rgba(124, 92, 252, 0.08)'
 
-  const doneLen   = (done   / safeTotal) * C
-  const activeLen = (active / safeTotal) * C
-  const idleLen   = (idle   / safeTotal) * C
-
-  const doneOffset   = C - 0
-  const activeOffset = C - doneLen
-  const idleOffset   = C - (doneLen + activeLen)
-
-  const trackColor = '#E0DBD2'
-
-  const seg = (len, offset, color) => (
-    len > 0 ? (
-      <circle
-        cx={cx} cy={cy} r={r}
-        fill="none"
-        stroke={color}
-        strokeWidth={sw}
-        strokeDasharray={`${len} ${C - len}`}
-        strokeDashoffset={offset}
-        strokeLinecap="round"
-        style={{ transition: 'stroke-dasharray 0.4s ease' }}
-      />
-    ) : null
-  )
+  let currentOffset = C
 
   return (
     <div className="donut-wrap">
-      <div className="right-section-title">Overview</div>
+      <div className="right-section-title">Time Breakdown</div>
       <div className="donut-svg-wrap">
         <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
           <circle cx={cx} cy={cy} r={r} fill="none" stroke={trackColor} strokeWidth={sw} />
-          {total > 0 && <>
-            {seg(idleLen,   idleOffset,   '#A8A29E')}
-            {seg(activeLen, activeOffset, '#D97706')}
-            {seg(doneLen,   doneOffset,   '#059669')}
-          </>}
+          {data.map((item, i) => {
+            const segmentLen = ((item.ms || 0) / safeTotal) * C
+            if (isNaN(segmentLen)) return null
+            const segmentOffset = currentOffset
+            currentOffset -= segmentLen
+            return (
+              <circle
+                key={i}
+                cx={cx} cy={cy} r={r}
+                fill="none"
+                stroke={item.color}
+                strokeWidth={sw}
+                strokeDasharray={`${segmentLen} ${C - segmentLen}`}
+                strokeDashoffset={segmentOffset}
+                strokeLinecap="round"
+                style={{ transition: 'stroke-dasharray 0.4s ease' }}
+              />
+            )
+          })}
         </svg>
         <div className="donut-center-text">
-          <span className="donut-center-value">{done}/{total}</span>
-          <span className="donut-center-label">done</span>
+          <span className="donut-center-value">{formatShort(totalMs)}</span>
+          <span className="donut-center-label">total</span>
         </div>
       </div>
     </div>
@@ -338,6 +429,7 @@ function Timeline({ allTasks, days, viewMode, now, timelineScrollRef }) {
             status, colorIdx, isLive: !sess.endTime,
             startY, endY, realEndY, height,
             startTime: sess.startTime, endTime: sess.endTime, dayIndex,
+            tagId: task.tags?.[0], tags: task.tags,
           })
         })
       })
@@ -423,7 +515,15 @@ function Timeline({ allTasks, days, viewMode, now, timelineScrollRef }) {
               const display   = displayBlocks[block.id] ?? { displayTop: block.startY, displayHeight: block.height }
               const { displayTop, displayHeight } = display
               const elems     = []
-              const palette   = TASK_PALETTE[block.colorIdx]
+              const palette   = { ...TASK_PALETTE[block.colorIdx] }
+
+              // ── Color override by tag ────────
+              const taskTag = DEFAULT_TAGS.find(t => t.id === block.tagId)
+              if (taskTag) {
+                palette.dot    = taskTag.dot || taskTag.color
+                palette.bg     = taskTag.bg
+                palette.border = taskTag.border || taskTag.dot || taskTag.color
+              }
 
               if (block.isLive) {
                 elems.push(
@@ -489,7 +589,7 @@ function Timeline({ allTasks, days, viewMode, now, timelineScrollRef }) {
 
 // ── Right Panel ───────────────────────────────────────────────────────────────
 
-function RightPanel({ allTasks, selDate, now, weekStart, user, templates, onLogout, onAddTemplate, onRemoveTemplate }) {
+function RightPanel({ allTasks, favoriteTasks, selDate, now, weekStart, user, templates, onLogout, onAddTemplate, onRemoveTemplate }) {
   const [viewMode,       setViewMode]       = useState('day')
   const [rightTab,       setRightTab]       = useState('stats')
   const [templateInput,  setTemplateInput]  = useState('')
@@ -521,20 +621,27 @@ function RightPanel({ allTasks, selDate, now, weekStart, user, templates, onLogo
   const total  = tasks.length
   const totalTrackedMs = tasks.reduce((acc, t) => acc + getTotalMs(t, now), 0)
 
+  // ── Calculate tag stats ───────────────────────────────────────────────────
+  const tagTimeMap = {}
+  let allProcessedSessions = []
+  tasks.forEach(task => {
+    const ms = getTotalMs(task, now)
+    if (ms <= 0) return
+    const tagId = task.tags?.[0] ?? 'other'
+    tagTimeMap[tagId] = (tagTimeMap[tagId] ?? 0) + ms
+    allProcessedSessions = [...allProcessedSessions, ...task.sessions]
+  })
+
+  const tagStats = Object.keys(tagTimeMap).map(id => {
+    const tag = DEFAULT_TAGS.find(t => t.id === id) || DEFAULT_TAGS.find(t => t.id === 'other')
+    return { id, label: tag.label, color: tag.dot, ms: tagTimeMap[id] }
+  }).sort((a, b) => b.ms - a.ms)
+
+
   const todayTasks     = allTasks[toKey(new Date())] ?? []
   const activeTask     = todayTasks.find(t => getTaskStatus(t) === 'active')
   const activeDuration = activeTask ? formatLive(getTotalMs(activeTask, now)) : '—'
 
-  // ── Favorites across all dates ─────────────────────────────────────────────
-  const favoriteTasks = useMemo(() => {
-    const all = []
-    Object.keys(allTasks).forEach(dateKey => {
-      allTasks[dateKey].forEach(task => {
-        if (task.favorite) all.push({ ...task, dateKey })
-      })
-    })
-    return all.sort((a, b) => b.createdAt - a.createdAt)
-  }, [allTasks])
 
   const userInitials = user?.name
     ? user.name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase()
@@ -562,41 +669,41 @@ function RightPanel({ allTasks, selDate, now, weekStart, user, templates, onLogo
             <button className={`toggle-btn${viewMode === 'month' ? ' toggle-btn--active' : ''}`} onClick={() => setViewMode('month')}>Month</button>
           </div>
 
-          <DonutChart done={done} active={active} idle={idle} />
+          <div className="divider" />
+          
+          <div className="stats-header-row">
+            <DonutChart data={tagStats} totalMs={totalTrackedMs || 0} />
+          </div>
+
+          <div className="divider" />
+
+          <Heatmap allTasks={allTasks} now={now} mode={viewMode} selDate={selDate} />
 
           <div className="legend">
-            <div className="legend-row">
-              <span className="legend-dot" style={{ background: '#059669' }} />
-              <span className="legend-label">Done</span>
-              <span className="legend-value">{done}</span>
-            </div>
-            <div className="legend-row">
-              <span className="legend-dot" style={{ background: '#D97706' }} />
-              <span className="legend-label">Active</span>
-              <span className="legend-value">{active}</span>
-            </div>
-            <div className="legend-row">
-              <span className="legend-dot" style={{ background: '#A8A29E' }} />
-              <span className="legend-label">Idle</span>
-              <span className="legend-value">{idle}</span>
-            </div>
+            {tagStats.length === 0 ? (
+              <div className="profile-empty">No tracked time yet</div>
+            ) : (
+              tagStats.map(stat => (
+                <div key={stat.id} className="legend-row">
+                  <span className="legend-dot" style={{ background: stat.color }} />
+                  <span className="legend-label">{stat.label}</span>
+                  <span className="legend-value">{formatShort(stat.ms)}</span>
+                </div>
+              ))
+            )}
           </div>
 
           <div className="divider" />
 
           <div>
-            <div className="right-section-title">Summary</div>
+            <div className="right-section-title">Quick Stats</div>
             <div className="stats-grid">
               <div className="stat-item">
-                <span className="stat-item-label">Total tasks</span>
-                <span className="stat-item-value">{total}</span>
+                <span className="stat-item-label">Status breakdown</span>
+                <span className="stat-item-sub">{done} done · {active} active · {idle} idle</span>
               </div>
               <div className="stat-item">
-                <span className="stat-item-label">Tracked</span>
-                <span className="stat-item-value">{totalTrackedMs > 0 ? formatShort(totalTrackedMs) : '—'}</span>
-              </div>
-              <div className="stat-item">
-                <span className="stat-item-label">Active now</span>
+                <span className="stat-item-label">Active task</span>
                 <span className="stat-item-value">{activeDuration}</span>
               </div>
             </div>
@@ -636,11 +743,11 @@ function RightPanel({ allTasks, selDate, now, weekStart, user, templates, onLogo
                       {taskTags.length > 0 && (
                         <div className="favorite-item-tags">
                           {taskTags.map(tag => (
-                            <span
-                              key={tag.id}
-                              className="task-tag-chip"
-                              style={{ background: tag.bg, color: tag.color }}
-                            >
+                             <span
+                               key={tag.id}
+                               className="task-tag-chip"
+                               style={{ background: tag.bg, color: tag.textColor, border: `1px solid ${tag.border || tag.dot}` }}
+                             >
                               {tag.label}
                             </span>
                           ))}
@@ -764,15 +871,28 @@ export default function App() {
   const [weekStart,     setWeekStart]     = useState(() => getWeekStart(new Date()))
   const [selTaskId,     setSelTaskId]     = useState(null)
   const [inputValue,    setInputValue]    = useState('')
-  const [selectedTags,  setSelectedTags]  = useState([])
+  const [selectedTag,   setSelectedTag]   = useState(null)
   const [showTagPicker, setShowTagPicker] = useState(false)
   const [tick,          setTick]          = useState(0)
   const [timelineView,  setTimelineView]  = useState('day')
+  const [editingTaskId, setEditingTaskId] = useState(null)
+  const [editNameValue, setEditNameValue] = useState('')
 
   const inputRef          = useRef(null)
   const timelineScrollRef = useRef(null)
   const dragItem          = useRef(null)
   const dragOverItem      = useRef(null)
+  
+  // ── Favorites across all dates ─────────────────────────────────────────────
+  const favoriteTasks = useMemo(() => {
+    const all = []
+    Object.keys(tasks).forEach(dateKey => {
+      tasks[dateKey].forEach(task => {
+        if (task.favorite) all.push({ ...task, dateKey })
+      })
+    })
+    return all.sort((a, b) => b.createdAt - a.createdAt)
+  }, [tasks])
 
   // ── Tick ───────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -786,9 +906,9 @@ export default function App() {
     const activeTask = todayTasks.find(t => getTaskStatus(t) === 'active')
     if (activeTask) {
       const ms = getTotalMs(activeTask, Date.now())
-      document.title = `▶ [${formatLive(ms)}] ${activeTask.name} - Daylog`
+      document.title = `▶ [${formatLive(ms)}] ${activeTask.name} - Echo`
     } else {
-      document.title = 'Daylog'
+      document.title = 'Echo'
     }
   }, [tasks, tick])
 
@@ -834,7 +954,7 @@ export default function App() {
     setSelDate(key)
     setSelTaskId(null)
     setInputValue('')
-    setSelectedTags([])
+    setSelectedTag(null)
     setShowTagPicker(false)
   }, [])
 
@@ -851,16 +971,16 @@ export default function App() {
       done:     false,
       colorIdx: currentDayTasks.length % TASK_PALETTE.length,
       createdAt: Date.now(),
-      tags:     [...selectedTags],
+      tags:     selectedTag ? [selectedTag] : ['other'],
       favorite: false,
     }
     setTasks(prev => ({ ...prev, [selDate]: [...(prev[selDate] ?? []), task] }))
     setSelTaskId(task.id)
     setInputValue('')
-    setSelectedTags([])
+    setSelectedTag(null)
     setShowTagPicker(false)
     inputRef.current?.focus()
-  }, [inputValue, selDate, selectedTags])
+  }, [inputValue, selDate, selectedTag])
 
   const updateTask = useCallback((id, updater) => {
     setTasks(prev => ({
@@ -919,6 +1039,29 @@ export default function App() {
     setSelTaskId(prev => (prev === id ? null : prev))
   }, [selDate])
 
+  const renameTask = useCallback((id, newName) => {
+    updateTask(id, t => ({ ...t, name: newName.trim() || t.name }))
+    setEditingTaskId(null)
+  }, [updateTask])
+
+  const deleteSession = useCallback((taskId, sessId) => {
+    updateTask(taskId, t => ({ ...t, sessions: t.sessions.filter(s => s.id !== sessId) }))
+  }, [updateTask])
+
+  const updateSession = useCallback((taskId, sessId, key, newVal) => {
+    // newVal is expected as a timestamp or HM string we parse
+    updateTask(taskId, task => ({
+      ...task,
+      sessions: task.sessions.map(s => {
+        if (s.id !== sessId) return s
+        const d = new Date(s[key] || Date.now())
+        const [h, m] = newVal.split(':').map(Number)
+        d.setHours(h, m, 0, 0)
+        return { ...s, [key]: d.getTime() }
+      })
+    }))
+  }, [updateTask])
+
   const handleSort = useCallback(() => {
     const currentTasks = [...(tasks[selDate] ?? [])].map((t, i) => ({
       ...t, colorIdx: t.colorIdx ?? (i % TASK_PALETTE.length),
@@ -931,9 +1074,7 @@ export default function App() {
   }, [selDate, tasks])
 
   const toggleTag = useCallback((tagId) => {
-    setSelectedTags(prev =>
-      prev.includes(tagId) ? prev.filter(id => id !== tagId) : [...prev, tagId]
-    )
+    setSelectedTag(prev => prev === tagId ? null : tagId)
   }, [])
 
   // ── Selected day display ────────────────────────────────────────────────────
@@ -958,7 +1099,7 @@ export default function App() {
       {/* ── HEADER ─────────────────────────────────────────────────────────── */}
       <header className="header">
         <div className="header-brand">
-          <span className="brand-text">DAYLOG<span className="brand-dot" /></span>
+          <span className="brand-text">ECHO<span className="brand-dot" /></span>
         </div>
 
         <nav className="header-nav">
@@ -1032,18 +1173,49 @@ export default function App() {
             {showTagPicker && (
               <div className="tag-picker-row">
                 {DEFAULT_TAGS.map(tag => {
-                  const active = selectedTags.includes(tag.id)
+                  const isActive = selectedTag === tag.id
                   return (
                     <button
                       key={tag.id}
-                      className={`tag-pill${active ? ' tag-pill--active' : ''}`}
-                      style={active
-                        ? { background: tag.color, color: '#fff', borderColor: tag.color }
-                        : { background: tag.bg,    color: tag.color, borderColor: 'transparent' }
+                      className={`tag-pill${isActive ? ' tag-pill--active' : ''}`}
+                      style={isActive
+                        ? { background: tag.dot, color: '#fff',   borderColor: tag.dot }
+                        : { background: '#fff',  color: tag.textColor, borderColor: tag.border || tag.dot }
                       }
                       onClick={() => toggleTag(tag.id)}
                     >
                       {tag.label}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+
+            {/* Quick Favorites Tray */}
+            {favoriteTasks.length > 0 && (
+              <div className="favorites-tray">
+                {Array.from(new Set(favoriteTasks.map(t => t.name))).slice(0, 8).map(name => {
+                  const firstFav = favoriteTasks.find(t => t.name === name)
+                  return (
+                    <button
+                      key={name}
+                      className="fav-chip"
+                      onClick={() => {
+                        const taskToAdd = {
+                          id:       uid(),
+                          name:     name,
+                          sessions: [],
+                          done:     false,
+                          colorIdx: (tasks[selDate]?.length ?? 0) % TASK_PALETTE.length,
+                          createdAt: Date.now(),
+                          tags:     firstFav.tags ?? ['other'],
+                          favorite: true,
+                        }
+                        setTasks(prev => ({ ...prev, [selDate]: [...(prev[selDate] ?? []), taskToAdd] }))
+                        setSelTaskId(taskToAdd.id)
+                      }}
+                    >
+                      {name}
                     </button>
                   )
                 })}
@@ -1068,8 +1240,16 @@ export default function App() {
               const status      = getTaskStatus(task)
               const totalMs     = getTotalMs(task, now)
               const isExpanded  = selTaskId === task.id
-              const taskPalette = TASK_PALETTE[task.colorIdx ?? (i % TASK_PALETTE.length)]
+              const taskPalette = { ...TASK_PALETTE[task.colorIdx ?? (i % TASK_PALETTE.length)] }
               const taskTags    = (task.tags ?? []).map(id => DEFAULT_TAGS.find(t => t.id === id)).filter(Boolean)
+              const firstTag    = taskTags[0]
+              
+              if (firstTag) {
+                taskPalette.dot = firstTag.dot || firstTag.color
+                taskPalette.bg  = firstTag.bg
+                taskPalette.border = firstTag.border || firstTag.dot || firstTag.color
+              }
+
               const isFav       = task.favorite ?? false
 
               let metaText = 'not started'
@@ -1090,7 +1270,42 @@ export default function App() {
                 >
                   <div className="task-card-top">
                     <span className="status-dot" style={{ background: taskPalette.dot }} />
-                    <span className="task-card-name">{task.name}</span>
+                    {editingTaskId === task.id ? (
+                      <input
+                        className="task-rename-input"
+                        autoFocus
+                        value={editNameValue}
+                        onChange={e => setEditNameValue(e.target.value)}
+                        onBlur={() => renameTask(task.id, editNameValue)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') renameTask(task.id, editNameValue)
+                          if (e.key === 'Escape') setEditingTaskId(null)
+                        }}
+                        onClick={e => e.stopPropagation()}
+                      />
+                    ) : (
+                      <span
+                        className="task-card-name"
+                        onDoubleClick={(e) => {
+                          e.stopPropagation()
+                          setEditingTaskId(task.id)
+                          setEditNameValue(task.name)
+                        }}
+                      >
+                        {task.name}
+                        <button
+                          className="btn-edit-inline"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setEditingTaskId(task.id)
+                            setEditNameValue(task.name)
+                          }}
+                          title="Rename task"
+                        >
+                          ✎
+                        </button>
+                      </span>
+                    )}
                     <button
                       className={`task-heart${isFav ? ' task-heart--active' : ''}`}
                       onClick={e => { e.stopPropagation(); toggleFavorite(task.id) }}
@@ -1107,7 +1322,7 @@ export default function App() {
                         <span
                           key={tag.id}
                           className="task-tag-chip"
-                          style={{ background: tag.bg, color: tag.color }}
+                          style={{ background: tag.bg, color: tag.textColor, border: `1px solid ${tag.border || tag.dot}` }}
                         >
                           {tag.label}
                         </span>
@@ -1134,7 +1349,67 @@ export default function App() {
                       {status === 'done' && (
                         <button className="btn" onClick={() => startTask(task.id)} disabled={selDate !== toKey(new Date())}>↺ Reopen</button>
                       )}
-                      <button className="btn btn--delete" onClick={() => deleteTask(task.id)}>✕</button>
+                      <button className="btn btn--delete" onClick={() => deleteTask(task.id)}>✕ Delete task</button>
+
+                      {/* Sessions editor */}
+                      {task.sessions.length > 0 && (
+                        <div className="task-sessions-list">
+                          <div className="task-sessions-header">Edit sessions</div>
+                          {task.sessions.map((s, idx) => (
+                            <div key={s.id || idx} className="session-edit-row">
+                              <input
+                                type="time"
+                                className="session-time-input"
+                                value={formatHM(s.startTime)}
+                                onChange={e => updateSession(task.id, s.id, 'startTime', e.target.value)}
+                              />
+                              <span className="session-time-sep">to</span>
+                              {s.endTime ? (
+                                <input
+                                  type="time"
+                                  className="session-time-input"
+                                  value={formatHM(s.endTime)}
+                                  onChange={e => updateSession(task.id, s.id, 'endTime', e.target.value)}
+                                />
+                              ) : (
+                                <span className="session-time-live">Active now</span>
+                              )}
+                              <button
+                                className="btn-session-del"
+                                onClick={() => deleteSession(task.id, s.id)}
+                                title="Remove session"
+                              >
+                                ×
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Inline Tag Picker for Task */}
+                      <div className="task-inline-tags">
+                        {DEFAULT_TAGS.map(tag => {
+                          const isActive = (task.tags ?? []).includes(tag.id)
+                          return (
+                            <button
+                              key={tag.id}
+                              className={`tag-pill${isActive ? ' tag-pill--active' : ''}`}
+                              style={isActive
+                                ? { background: tag.dot, color: '#fff',   borderColor: tag.dot }
+                                : { background: '#fff',  color: tag.textColor, borderColor: tag.border || tag.dot }
+                              }
+                              onClick={() => {
+                                updateTask(task.id, t => {
+                                  const next = [tag.id] // Force single tag selection
+                                  return { ...t, tags: next }
+                                })
+                              }}
+                            >
+                              {tag.label}
+                            </button>
+                          )
+                        })}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1147,8 +1422,8 @@ export default function App() {
         <Timeline
           allTasks={tasks}
           days={timelineView === 'week'
-            ? weekDays
-            : [weekDays.find(d => d.key === selDate) ?? { key: selDate, shortLabel: DAY_SHORT[new Date(selDate).getDay()], dayNum: new Date(selDate).getDate() }]
+            ? (weekDays || [])
+            : [(weekDays || []).find(d => d.key === selDate) ?? { key: selDate, shortLabel: '?', dayNum: '' }]
           }
           viewMode={timelineView}
           now={now}
@@ -1158,6 +1433,7 @@ export default function App() {
         {/* ── RIGHT PANEL ────────────────────────────────────────────────── */}
         <RightPanel
           allTasks={tasks}
+          favoriteTasks={favoriteTasks}
           selDate={selDate}
           now={now}
           weekStart={weekStart}

@@ -372,6 +372,7 @@ body {
   font-weight: 500;
   color: var(--ink-primary);
   outline: none;
+  min-width: 0;
   transition: border-color var(--transition), box-shadow var(--transition);
 }
 
@@ -474,19 +475,10 @@ body {
 
 .status-dot--active {
   background: var(--amber);
-  animation: pulse-dot 1.4s ease-in-out infinite;
+  box-shadow: 0 0 0 3px var(--amber-light);
 }
 
-@keyframes pulse-dot {
-  0%, 100% {
-    opacity: 1;
-    box-shadow: 0 0 0 0 rgba(124, 92, 252, 0.5);
-  }
-  50% {
-    opacity: 0.85;
-    box-shadow: 0 0 0 4px rgba(124, 92, 252, 0);
-  }
-}
+
 
 .task-card-name {
   font-family: var(--font-body);
@@ -500,6 +492,31 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: default;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.btn-edit-inline:hover {
+  color: var(--amber);
+  transform: scaleX(-1) scale(1.2);
+}
+
+.btn-edit-inline {
+  opacity: 0;
+  background: transparent;
+  border: none;
+  font-size: 11px;
+  color: var(--ink-muted);
+  cursor: pointer;
+  transition: all var(--transition);
+  line-height: 1;
+  display: inline-flex;
+  transform: scaleX(-1);
+}
+
+.task-card:hover .btn-edit-inline {
+  opacity: 1;
 }
 
 .task-rename-input {
@@ -535,10 +552,20 @@ body {
 .task-card-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 8px 5px;
   padding-top: 10px;
   padding-left: 15px;
   animation: expandDown 0.15s ease both;
+}
+
+.task-inline-tags {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
 }
 
 .task-tag-badge {
@@ -583,6 +610,81 @@ body {
 
 .tag-btn--active {
   font-weight: 700;
+}
+
+.task-card-edit-hint {
+  width: 100%;
+  font-family: var(--font-body);
+  font-size: 9px;
+  color: var(--ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+
+.task-sessions-list {
+  width: 100%;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.task-sessions-header {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+
+.session-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.session-time-input {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-primary);
+  padding: 2px 4px;
+  outline: none;
+  cursor: pointer;
+}
+
+.session-time-sep {
+  font-size: 10px;
+  color: var(--ink-faint);
+}
+
+.session-time-live {
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-style: italic;
+  color: var(--amber);
+}
+
+.btn-session-del {
+  background: transparent;
+  border: none;
+  color: var(--ink-faint);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 4px;
+  margin-left: auto;
+  transition: color var(--transition);
+}
+
+.btn-session-del:hover {
+  color: #DC2626;
 }
 
 @keyframes expandDown {
@@ -856,7 +958,6 @@ body {
   background: var(--amber);
   flex-shrink: 0;
   box-shadow: 0 0 0 3px rgba(124, 92, 252, 0.2);
-  animation: pulse-dot 1.4s ease-in-out infinite;
 }
 
 .sp-name {
@@ -1066,6 +1167,76 @@ body {
   margin-top: 2px;
 }
 
+/* ── Dashboard & Analytics ─────────────────────────────────────────────── */
+
+.stats-header-row {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0;
+}
+
+.vertical-divider {
+  width: 1px;
+  height: 60px;
+  background: var(--border);
+  opacity: 0.5;
+}
+
+.heatmap-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0 16px;
+}
+
+.heatmap-grid-1d {
+  display: grid;
+  grid-template-columns: repeat(24, 1fr);
+  gap: 3px;
+}
+
+.heatmap-grid-7d {
+  display: grid;
+  grid-template-columns: 24px repeat(24, 1fr);
+  gap: 3px;
+  align-items: center;
+}
+
+.heatmap-row-header {
+  grid-column: 1;
+  display: flex;
+  align-items: center;
+}
+
+.heatmap-day-label {
+  font-family: var(--font-mono);
+  font-size: 7px;
+  font-weight: 600;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.heatmap-cell {
+  background: var(--amber); /* fallback */
+  border-radius: 1px;
+  transition: transform 0.2s;
+}
+
+.heatmap-cell:hover {
+  transform: scale(1.4);
+  z-index: 2;
+  box-shadow: 0 0 4px rgba(0,0,0,0.2);
+}
+
+.heatmap-labels {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  color: var(--ink-faint);
+}
+
 /* ── Legend ────────────────────────────────────────────────────────────── */
 
 .legend {
@@ -1127,9 +1298,17 @@ body {
 
 .stat-item-value {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 11px;
   color: var(--ink-primary);
-  font-weight: 400;
+  font-weight: 600;
+}
+
+.stat-item-sub {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
 /* ── Misc ──────────────────────────────────────────────────────────────── */
@@ -1437,7 +1616,45 @@ body {
   line-height: 1.4;
 }
 
-.tag-pill:hover { opacity: 0.85; transform: scale(1.04); }
+.tag-pill:hover { transform: scale(1.04); }
+
+/* ── Favorites Tray ─────────────────────────────────────────────────────── */
+
+.favorites-tray {
+  display: flex;
+  overflow-x: auto;
+  width: 100%;
+  min-width: 0;
+  gap: 6px;
+  padding: 8px 0 4px;
+  margin-top: 4px;
+  scrollbar-width: none; /* Firefox */
+}
+
+.favorites-tray::-webkit-scrollbar { display: none; } /* Chrome/Safari */
+
+.fav-chip {
+  padding: 5px 12px;
+  background: var(--bg-input);
+  border: 1.5px solid var(--border);
+  border-radius: 20px;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all var(--transition);
+  flex-shrink: 0;
+}
+
+.fav-chip:hover {
+  background: var(--bg-hover);
+  color: var(--amber);
+  border-color: var(--amber);
+}
+
+.fav-chip:active { transform: scale(0.96); }
 
 /* ── Task Card — heart + tags ───────────────────────────────────────────── */
 
