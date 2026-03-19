@@ -4,8 +4,8 @@ import './App.css'
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const HOUR_H         = 64
-const TIMELINE_START = 6
-const TIMELINE_END   = 23
+const TIMELINE_START = 0
+const TIMELINE_END   = 24
 const STORAGE_KEY    = 'dl-tasks-v3'
 const AUTH_KEY       = 'dl-auth'
 const TEMPLATES_KEY  = 'dl-templates'
@@ -1120,10 +1120,10 @@ export default function App() {
                   {isExpanded && (
                     <div className="task-card-actions" onClick={e => e.stopPropagation()}>
                       {status === 'idle' && task.sessions.length === 0 && (
-                        <button className="btn btn--start" onClick={() => startTask(task.id)}>▶ Start</button>
+                        <button className="btn btn--start" onClick={() => startTask(task.id)} disabled={selDate !== toKey(new Date())}>▶ Start</button>
                       )}
                       {status === 'idle' && task.sessions.length > 0 && (
-                        <button className="btn btn--start" onClick={() => startTask(task.id)}>↺ Resume</button>
+                        <button className="btn btn--start" onClick={() => startTask(task.id)} disabled={selDate !== toKey(new Date())}>↺ Resume</button>
                       )}
                       {status === 'active' && (
                         <>
@@ -1132,7 +1132,7 @@ export default function App() {
                         </>
                       )}
                       {status === 'done' && (
-                        <button className="btn" onClick={() => startTask(task.id)}>↺ Reopen</button>
+                        <button className="btn" onClick={() => startTask(task.id)} disabled={selDate !== toKey(new Date())}>↺ Reopen</button>
                       )}
                       <button className="btn btn--delete" onClick={() => deleteTask(task.id)}>✕</button>
                     </div>
