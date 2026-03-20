@@ -109,7 +109,8 @@ function formatShort(ms) {
 }
 
 function formatHM(ts) {
-  return new Date(ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+  const d = new Date(ts)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
 // ── Google Icon ───────────────────────────────────────────────────────────────
@@ -236,8 +237,8 @@ function Heatmap({ allTasks, now, mode, selDate }) {
           const date = new Date(y, m - 1, d)
           // JS scale: 0=Sun, 1=Mon...6=Sat => Map to 0=Mon...6=Sun
           const dayIdx = (date.getDay() + 6) % 7
-          const tasks = allTasks[k] ?? []
-          tasks.forEach(t => {
+          const dayTasks = allTasks[k] ?? []
+          dayTasks.forEach(t => {
             (t.sessions ?? []).forEach(s => {
               const start = new Date(s.startTime).getHours()
               const end   = new Date(s.endTime || nowRef).getHours()
@@ -253,8 +254,8 @@ function Heatmap({ allTasks, now, mode, selDate }) {
         const targetDate = new Date(nowRef)
         if (mode !== 'day') targetDate.setDate(targetDate.getDate() - (dCount - 1 - i))
         const key = mode === 'day' ? selDate : toKey(targetDate)
-        const tasks = allTasks?.[key] ?? []
-        tasks.forEach(t => {
+        const dayTasks = allTasks?.[key] ?? []
+        dayTasks.forEach(t => {
           (t.sessions ?? []).forEach(s => {
             const sT = Number(s.startTime)
             const eT = Number(s.endTime || nowRef)
@@ -355,10 +356,58 @@ function DonutChart({ data, totalMs }) {
             )
           })}
         </svg>
-        <div className="donut-center-text">
-          <span className="donut-center-value">{formatShort(totalMs)}</span>
-          <span className="donut-center-label">total</span>
-        </div>
+      </div>
+    </div>
+  )
+}
+
+function LineChart({ data }) {
+  const size = { w: 1000, h: 250 }
+  const max = Math.max(...data.map(d => d.ms), 3600000)
+  
+  const getX = (i) => (i / (data.length - 1)) * size.w
+  const getY = (v) => size.h - (v / max) * (size.h * 0.75) - 40
+
+  const points = data.map((d, i) => ({ x: getX(i), y: getY(d.ms) }))
+  
+  let dPath = `M ${points[0].x} ${points[0].y}`
+  for (let i = 0; i < points.length - 1; i++) {
+    const cp1x = points[i].x + (points[i+1].x - points[i].x) / 3
+    const cp2x = points[i+1].x - (points[i+1].x - points[i].x) / 3
+    dPath += ` C ${cp1x} ${points[i].y}, ${cp2x} ${points[i+1].y}, ${points[i+1].x} ${points[i+1].y}`
+  }
+
+  const areaPath = `${dPath} L ${points[points.length-1].x} ${size.h} L ${points[0].x} ${size.h} Z`
+
+  return (
+    <div className="line-chart-wrap">
+      <div className="card-top" style={{ marginBottom: 20 }}>
+        <h3 className="card-title">Focus Velocity</h3>
+        <div className="card-badge">Engagement Trends</div>
+      </div>
+      <div className="line-chart-svg-wrap">
+        <svg viewBox={`0 0 ${size.w} ${size.h}`} className="line-chart-svg" style={{ overflow: 'visible' }}>
+          <defs>
+            <linearGradient id="lineGrad" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stopColor="var(--amber)" />
+              <stop offset="100%" stopColor="#F59E0B" />
+            </linearGradient>
+            <linearGradient id="fillGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="rgba(124, 92, 252, 0.15)" />
+              <stop offset="100%" stopColor="transparent" />
+            </linearGradient>
+          </defs>
+          <path d={areaPath} fill="url(#fillGrad)" />
+          <path d={dPath} fill="none" stroke="url(#lineGrad)" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" 
+            style={{ filter: 'drop-shadow(0 6px 12px rgba(124, 92, 252, 0.25))' }} 
+          />
+          {points.map((p, i) => (
+             <circle key={i} cx={p.x} cy={p.y} r="5" fill="var(--bg-panel)" stroke="var(--amber)" strokeWidth="3" />
+          ))}
+        </svg>
+      </div>
+      <div className="line-chart-labels">
+        {data.filter((_, i) => i % 2 === 0).map(d => <span key={d.date}>{d.label}</span>)}
       </div>
     </div>
   )
@@ -384,7 +433,7 @@ function buildColumns(blocks) {
   })
 }
 
-function Timeline({ allTasks, days, viewMode, now, timelineScrollRef }) {
+function Timeline({ allTasks, days, viewMode, now, timelineScrollRef, selTaskId, onPlanHour }) {
   const isWeek  = viewMode === 'week'
   const todayKey = toKey(new Date())
 
@@ -397,8 +446,9 @@ function Timeline({ allTasks, days, viewMode, now, timelineScrollRef }) {
     days.forEach((day, dayIndex) => {
       const dayTasks = allTasks[day.key] ?? []
       dayTasks.forEach((task, taskIdx) => {
-        const status   = getTaskStatus(task)
         const colorIdx = task.colorIdx ?? (taskIdx % TASK_PALETTE.length)
+        
+        // 1. Actual sessions
         task.sessions.forEach(sess => {
           const start  = new Date(sess.startTime)
           const end    = sess.endTime ? new Date(sess.endTime) : new Date(now)
@@ -423,15 +473,40 @@ function Timeline({ allTasks, days, viewMode, now, timelineScrollRef }) {
             realEndY = startY + rawH
           }
 
-          const blockId = sess.id ? `${sess.id}` : `${task.id}-${sess.startTime}`
           blocks.push({
-            id: blockId, taskId: task.id, name: task.name,
-            status, colorIdx, isLive: !sess.endTime,
+            id: sess.id || uid(), taskId: task.id, name: task.name,
+            colorIdx, isLive: !sess.endTime,
             startY, endY, realEndY, height,
-            startTime: sess.startTime, endTime: sess.endTime, dayIndex,
-            tagId: task.tags?.[0], tags: task.tags,
+            dayIndex, type: 'actual',
+            startTime: sess.startTime, endTime: sess.endTime,
+            tagId: task.tags?.[0], tags: task.tags
           })
         })
+
+        // 2. Planned sessions
+        if (task.plannedSessions) {
+          task.plannedSessions.forEach(p => {
+            const start = new Date(p.startTime)
+            const end   = new Date(p.endTime)
+            const startH = start.getHours() + start.getMinutes() / 60
+            const endH   = end.getHours()   + end.getMinutes()   / 60
+
+            const clampedStart = Math.max(startH, TIMELINE_START)
+            const startY = (clampedStart - TIMELINE_START) * HOUR_H
+            const height = (endH - clampedStart) * HOUR_H
+
+            if (height <= 0) return
+
+            blocks.push({
+              id: p.id || uid(), taskId: task.id, name: task.name,
+              colorIdx, isPlanned: true,
+              startY, endY: startY + height, realEndY: startY + height, height,
+              dayIndex, type: 'planned',
+              startTime: p.startTime, endTime: p.endTime,
+              tagId: task.tags?.[0], tags: task.tags
+            })
+          })
+        }
       })
     })
     return blocks
@@ -486,12 +561,30 @@ function Timeline({ allTasks, days, viewMode, now, timelineScrollRef }) {
             </div>
           </div>
         )}
-        <div className="timeline-inner" style={{ height: (TIMELINE_END - TIMELINE_START) * HOUR_H }}>
+        <div 
+          className="timeline-inner" 
+          style={{ height: (TIMELINE_END - TIMELINE_START) * HOUR_H }}
+          onDragOver={e => e.preventDefault()}
+          onDrop={e => {
+            e.preventDefault()
+            const taskId = e.dataTransfer.getData('taskId')
+            if (!taskId) return
+            const rect = e.currentTarget.getBoundingClientRect()
+            const relY = e.clientY - rect.top
+            const hour = TIMELINE_START + (relY / HOUR_H)
+            onPlanHour?.(hour)
+          }}
+        >
           <div className="timeline-grid">
             {hours.map(h => (
-              <div key={h} className="timeline-hour-row" style={{ top: (h - TIMELINE_START) * HOUR_H }}>
+              <div 
+                key={h} 
+                className="timeline-hour-row" 
+                style={{ top: (h - TIMELINE_START) * HOUR_H }}
+                onClick={() => onPlanHour?.(h)}
+              >
                 <span className="timeline-hour-label">
-                  {h === 12 ? '12pm' : h > 12 ? `${h - 12}pm` : `${h}am`}
+                  {h}h
                 </span>
                 <div className="timeline-hour-line" />
               </div>
@@ -542,28 +635,64 @@ function Timeline({ allTasks, days, viewMode, now, timelineScrollRef }) {
                 ? `${block.name} · ${formatShort(sessionMs)}`
                 : undefined
 
+              const isPlanned = block.type === 'planned'
+              const isFocus = selTaskId === block.taskId
+
               elems.push(
                 <div
                   key={block.id}
-                  className={`session-block${tooltipLabel ? ' session-block--short' : ''}${block.isLive ? ' session-block--live' : ''}`}
+                  className={[
+                    'session-block',
+                    block.isLive ? 'session-block--live' : '',
+                    isPlanned ? 'session-block--planned' : '',
+                    isFocus ? 'session-block--focus' : '',
+                    tooltipLabel ? 'session-block--short' : ''
+                  ].filter(Boolean).join(' ')}
                   data-tooltip={tooltipLabel}
                   style={{
                     top:        displayTop,
                     height:     displayHeight,
                     left:       leftPct,
                     width:      widthPct,
-                    background: block.isLive ? palette.dot : palette.bg,
-                    border:     `1px solid ${palette.border}`,
+                    zIndex:     isPlanned ? 1 : 10,
+                    // Force inline style overrides to fix color errors
+                    background: isPlanned ? 'transparent' : (block.isLive ? palette.dot : palette.bg),
+                    borderColor: isPlanned ? palette.dot : palette.border,
+                    borderStyle: isPlanned ? 'dashed' : 'solid',
+                    opacity: isPlanned ? 0.35 : (isFocus ? 1 : 0.8),
                   }}
                 >
-                  {!block.isLive && displayHeight >= SHORT_BLOCK && (
-                    <>
-                      <span className="sb-name" style={{ color: palette.dot }}>{block.name}</span>
-                      <span className="sb-duration" style={{ color: palette.dot }}>{formatShort(sessionMs)}</span>
-                    </>
-                  )}
-                </div>
-              )
+                  {displayHeight >= 20 && (
+                    <div className="sb-content" style={{ display: 'flex', flexDirection: 'column', padding: '4px' }}>
+                      <span className="sb-name" style={{ 
+                        color: isPlanned ? palette.dot : (block.isLive ? '#fff' : palette.dot),
+                        fontSize: '11px',
+                        fontWeight: '700',
+                        overflow: 'hidden',
+                        whiteSpace: 'nowrap',
+                        textOverflow: 'ellipsis'
+                      }}>{block.name}</span>
+                      {displayHeight >= 32 && (
+                        <span className="sb-duration" style={{ 
+                    color: isPlanned ? palette.dot : (block.isLive ? 'rgba(255,255,255,0.8)' : palette.dot),
+                    fontSize: '10px',
+                    fontFamily: 'var(--font-mono)'
+                  }}>
+                    {formatShort(sessionMs)}
+                  </span>
+                )}
+              </div>
+            )}
+            {isPlanned && (
+              <button 
+                className="btn-planned-del"
+                onClick={e => { e.stopPropagation(); deletePlannedSession(block.taskId, days[block.dayIndex].key, block.id) }}
+              >
+                ×
+              </button>
+            )}
+          </div>
+        )
 
               return elems
             })}
@@ -589,53 +718,132 @@ function Timeline({ allTasks, days, viewMode, now, timelineScrollRef }) {
 
 // ── Right Panel ───────────────────────────────────────────────────────────────
 
-function RightPanel({ allTasks, favoriteTasks, selDate, now, weekStart, user, templates, onLogout, onAddTemplate, onRemoveTemplate }) {
-  const [viewMode,       setViewMode]       = useState('day')
-  const [rightTab,       setRightTab]       = useState('stats')
-  const [templateInput,  setTemplateInput]  = useState('')
+function BarChart({ data }) {
+  const max = Math.max(...data.map(d => d.avgMs), 1)
+  return (
+    <div className="bar-chart-wrap">
+      <div className="right-section-title">Avg Session by Category</div>
+      <div className="bar-list">
+        {data.slice(0, 5).map(item => {
+          const barWidth = (item.avgMs / max) * 100
+          if (item.avgMs <= 0) return null
+          return (
+            <div key={item.id} className="bar-row">
+              <div className="bar-info">
+                <span className="bar-name">{item.label}</span>
+                <span className="bar-val">{formatShort(item.avgMs)}</span>
+              </div>
+              <div className="bar-track">
+                <div className="bar-fill" style={{ width: `${barWidth}%`, background: item.color }} />
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
 
-  // ── Stats data ─────────────────────────────────────────────────────────────
-  let tasks = []
-  if (viewMode === 'day') {
-    tasks = allTasks[selDate] ?? []
-  } else if (viewMode === 'week') {
-    for (let i = 0; i < 7; i++) {
-      const d = addDays(weekStart, i)
-      tasks.push(...(allTasks[toKey(d)] ?? []))
-    }
-  } else if (viewMode === 'month') {
-    const selDateObj = new Date(selDate + 'T12:00:00')
-    const year  = selDateObj.getFullYear()
-    const month = selDateObj.getMonth()
-    Object.keys(allTasks).forEach(key => {
-      const [y, m] = key.split('-')
-      if (parseInt(y) === year && parseInt(m) - 1 === month) {
-        tasks.push(...allTasks[key])
+function RightPanel({
+  allTasks, favoriteTasks, selDate, now, weekStart, user, templates, 
+  onLogout, onAddTemplate, onRemoveTemplate, isInsights, isAccount
+}) {
+  const [viewMode, setViewMode] = useState('day')
+  const [rightTab, setRightTab] = useState('stats')
+  const [templateInput, setTemplateInput] = useState('')
+  const uid = () => Math.random().toString(36).substr(2, 9)
+
+  // ── Stats calculation ─────────────────────────────────────────────────────
+  const { 
+    tasks, doneTasks, activeTasks, idleTasks, totalTrackedMs, 
+    tagStats, sessCount, longestSessMs, completionRate, avgSessMs, dailyTotals, carryOverCount
+  } = useMemo(() => {
+    let tempTasks = []
+    if (viewMode === 'day') {
+      tempTasks = allTasks[selDate] ?? []
+    } else if (viewMode === 'week') {
+      for (let i = 0; i < 7; i++) {
+        const d = addDays(weekStart, i)
+        tempTasks.push(...(allTasks[toKey(d)] ?? []))
       }
+    } else if (viewMode === 'month') {
+      const selDateObj = new Date(selDate + 'T12:00:00')
+      const year = selDateObj.getFullYear()
+      const month = selDateObj.getMonth()
+      Object.keys(allTasks).forEach(key => {
+        const [y, m] = key.split('-')
+        if (parseInt(y) === year && parseInt(m) - 1 === month) {
+          tempTasks.push(...(allTasks[key] || []))
+        }
+      })
+    }
+
+    const dTasks = tempTasks.filter(t => t.done)
+    const aTasks = tempTasks.filter(t => getTaskStatus(t) === 'active')
+    const iTasks = tempTasks.filter(t => getTaskStatus(t) === 'idle')
+    const msTotal = tempTasks.reduce((acc, t) => acc + getTotalMs(t, now), 0)
+
+    const tagTimeMap = {}
+    const tagSessCountMap = {}
+    tempTasks.forEach(task => {
+      const ms = getTotalMs(task, now)
+      if (ms <= 0) return
+      const tagId = task.tags?.[0] ?? 'other'
+      tagTimeMap[tagId] = (tagTimeMap[tagId] ?? 0) + ms
+      tagSessCountMap[tagId] = (tagSessCountMap[tagId] ?? 0) + (task.sessions?.length || 0)
     })
-  }
 
-  const done   = tasks.filter(t => t.done).length
-  const active = tasks.filter(t => getTaskStatus(t) === 'active').length
-  const idle   = tasks.filter(t => getTaskStatus(t) === 'idle').length
-  const total  = tasks.length
-  const totalTrackedMs = tasks.reduce((acc, t) => acc + getTotalMs(t, now), 0)
+    const tStats = Object.keys(tagTimeMap).map(id => {
+      const tag = DEFAULT_TAGS.find(t => t.id === id) || DEFAULT_TAGS.find(t => t.id === 'other')
+      const tagAvgMs = tagSessCountMap[id] > 0 ? tagTimeMap[id] / tagSessCountMap[id] : 0
+      return { id, label: tag.label, color: tag.dot, ms: tagTimeMap[id], avgMs: tagAvgMs }
+    }).sort((a, b) => b.ms - a.ms)
 
-  // ── Calculate tag stats ───────────────────────────────────────────────────
-  const tagTimeMap = {}
-  let allProcessedSessions = []
-  tasks.forEach(task => {
-    const ms = getTotalMs(task, now)
-    if (ms <= 0) return
-    const tagId = task.tags?.[0] ?? 'other'
-    tagTimeMap[tagId] = (tagTimeMap[tagId] ?? 0) + ms
-    allProcessedSessions = [...allProcessedSessions, ...task.sessions]
-  })
+    const sessTotal = tempTasks.reduce((acc, t) => acc + (t.sessions?.length || 0), 0)
+    let maxSessMs = 0
+    tempTasks.forEach(t => {
+      (t.sessions || []).forEach(s => {
+        if (s.endTime) {
+          const dur = s.endTime - s.startTime
+          if (dur > maxSessMs) maxSessMs = dur
+        } else {
+          const dur = now - s.startTime // current session
+          if (dur > maxSessMs) maxSessMs = dur
+        }
+      })
+    })
 
-  const tagStats = Object.keys(tagTimeMap).map(id => {
-    const tag = DEFAULT_TAGS.find(t => t.id === id) || DEFAULT_TAGS.find(t => t.id === 'other')
-    return { id, label: tag.label, color: tag.dot, ms: tagTimeMap[id] }
-  }).sort((a, b) => b.ms - a.ms)
+    const doneRate      = tempTasks.length > 0 ? Math.round((dTasks.length / tempTasks.length) * 100) : 0
+    const aSessMs       = sessTotal > 0 ? msTotal / sessTotal : 0
+    const coCount       = tempTasks.filter(t => t.carriedOver).length
+
+    return { 
+      tasks: tempTasks, 
+      doneTasks: dTasks, 
+      activeTasks: aTasks, 
+      idleTasks: iTasks, 
+      totalTrackedMs: msTotal, 
+      tagStats: tStats,
+      sessCount: sessTotal,
+      longestSessMs: maxSessMs,
+      completionRate: doneRate,
+      avgSessMs: aSessMs,
+      dailyTotals: (() => {
+        const arr = []
+        const nowRef = new Date()
+        for (let i = 13; i >= 0; i--) {
+          const d = new Date(nowRef)
+          d.setDate(d.getDate() - i)
+          const k = toKey(d)
+          const tasks = allTasks[k] ?? []
+          const ms = tasks.reduce((acc, t) => acc + getTotalMs(t, now), 0)
+          arr.push({ date: k, ms, label: d.getDate() })
+        }
+        return arr
+      })(),
+      carryOverCount: coCount
+    }
+  }, [viewMode, allTasks, selDate, weekStart, now])
 
 
   const todayTasks     = allTasks[toKey(new Date())] ?? []
@@ -653,148 +861,231 @@ function RightPanel({ allTasks, favoriteTasks, selDate, now, weekStart, user, te
   }
 
   return (
-    <div className="panel-right">
-      {/* ── Tab strip ──────────────────────────────────────────────────────── */}
-      <div className="rp-tabs">
-        <button className={`rp-tab${rightTab === 'stats' ? ' rp-tab--active' : ''}`} onClick={() => setRightTab('stats')}>Stats</button>
-        <button className={`rp-tab${rightTab === 'profile' ? ' rp-tab--active' : ''}`} onClick={() => setRightTab('profile')}>Profile</button>
-      </div>
-
-      {/* ── STATS TAB ──────────────────────────────────────────────────────── */}
-      {rightTab === 'stats' && (
-        <>
-          <div className="view-toggle">
-            <button className={`toggle-btn${viewMode === 'day'   ? ' toggle-btn--active' : ''}`} onClick={() => setViewMode('day')}>Day</button>
-            <button className={`toggle-btn${viewMode === 'week'  ? ' toggle-btn--active' : ''}`} onClick={() => setViewMode('week')}>Week</button>
-            <button className={`toggle-btn${viewMode === 'month' ? ' toggle-btn--active' : ''}`} onClick={() => setViewMode('month')}>Month</button>
-          </div>
-
-          <div className="divider" />
-          
-          <div className="stats-header-row">
-            <DonutChart data={tagStats} totalMs={totalTrackedMs || 0} />
-          </div>
-
-          <div className="divider" />
-
-          <Heatmap allTasks={allTasks} now={now} mode={viewMode} selDate={selDate} />
-
-          <div className="legend">
-            {tagStats.length === 0 ? (
-              <div className="profile-empty">No tracked time yet</div>
-            ) : (
-              tagStats.map(stat => (
-                <div key={stat.id} className="legend-row">
-                  <span className="legend-dot" style={{ background: stat.color }} />
-                  <span className="legend-label">{stat.label}</span>
-                  <span className="legend-value">{formatShort(stat.ms)}</span>
-                </div>
-              ))
-            )}
-          </div>
-
-          <div className="divider" />
-
-          <div>
-            <div className="right-section-title">Quick Stats</div>
-            <div className="stats-grid">
-              <div className="stat-item">
-                <span className="stat-item-label">Status breakdown</span>
-                <span className="stat-item-sub">{done} done · {active} active · {idle} idle</span>
-              </div>
-              <div className="stat-item">
-                <span className="stat-item-label">Active task</span>
-                <span className="stat-item-value">{activeDuration}</span>
-              </div>
+    <div className={`right-panel ${isInsights || isAccount ? 'rp--full' : ''}`}>
+      {isInsights && (
+        <div className="view-container insights-page page-fade-in">
+          <div className="view-header">
+            <div className="view-header-left">
+              <h1 className="view-title">Insights<span className="brand-dot" /></h1>
+              <div className="view-subtitle">Your productivity pulse across {viewMode}.</div>
             </div>
-          </div>
-        </>
-      )}
-
-      {/* ── PROFILE TAB ────────────────────────────────────────────────────── */}
-      {rightTab === 'profile' && (
-        <div className="profile-content">
-          {/* User card */}
-          <div className="profile-user-card">
-            <div className="profile-avatar">{userInitials}</div>
-            <div className="profile-user-info">
-              <div className="profile-user-name">{user?.name ?? 'Guest'}</div>
-              {user?.email && <div className="profile-user-email">{user.email}</div>}
+            <div className="view-mode-pills">
+              <button className={`pill-btn ${viewMode === 'day' ? 'active' : ''}`} onClick={() => setViewMode('day')}>Day</button>
+              <button className={`pill-btn ${viewMode === 'week' ? 'active' : ''}`} onClick={() => setViewMode('week')}>Week</button>
+              <button className={`pill-btn ${viewMode === 'month' ? 'active' : ''}`} onClick={() => setViewMode('month')}>Month</button>
             </div>
           </div>
 
-          <div className="divider" />
-
-          {/* Favorites */}
-          <div className="profile-section">
-            <div className="right-section-title">Favorites · {favoriteTasks.length}</div>
-            {favoriteTasks.length === 0 ? (
-              <div className="profile-empty">No favorites yet</div>
-            ) : (
-              <div className="favorite-list">
-                {favoriteTasks.map(task => {
-                  const taskTags = (task.tags ?? [])
-                    .map(id => DEFAULT_TAGS.find(t => t.id === id))
-                    .filter(Boolean)
-                  return (
-                    <div key={`${task.id}-${task.dateKey}`} className="favorite-item">
-                      <div className="favorite-item-name">{task.name}</div>
-                      <div className="favorite-item-date">{task.dateKey}</div>
-                      {taskTags.length > 0 && (
-                        <div className="favorite-item-tags">
-                          {taskTags.map(tag => (
-                             <span
-                               key={tag.id}
-                               className="task-tag-chip"
-                               style={{ background: tag.bg, color: tag.textColor, border: `1px solid ${tag.border || tag.dot}` }}
-                             >
-                              {tag.label}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            )}
+          <div className="stats-strip">
+             <div className="stat-box">
+               <div className="stat-val">{formatShort(totalTrackedMs)}</div>
+               <div className="stat-lab">Tracked Time</div>
+             </div>
+             <div className="stat-box">
+               <div className="stat-val">{completionRate}%</div>
+               <div className="stat-lab">Completion Rate</div>
+             </div>
+             <div className="stat-box">
+               <div className="stat-val">{sessCount}</div>
+               <div className="stat-lab">Sessions</div>
+             </div>
+             <div className="stat-box">
+               <div className="stat-val" style={{ color: carryOverCount > 0 ? '#E11D48' : 'inherit' }}>{carryOverCount}</div>
+               <div className="stat-lab">Carried Over</div>
+             </div>
+             <div className="stat-box">
+               <div className="stat-val">{longestSessMs > 0 ? formatShort(longestSessMs) : '—'}</div>
+               <div className="stat-lab">Peak Focus</div>
+             </div>
           </div>
 
-          <div className="divider" />
-
-          {/* Templates */}
-          <div className="profile-section">
-            <div className="right-section-title">Templates</div>
-            <div className="template-add-row">
-              <input
-                className="template-add-input"
-                placeholder="Save a template…"
-                value={templateInput}
-                onChange={e => setTemplateInput(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleAddTemplate()}
-              />
-              <button className="template-add-btn" onClick={handleAddTemplate}>+</button>
+          <div className="insights-grid">
+            <div className="insights-card main-chart">
+               <div className="card-top">
+                 <h3 className="card-title">Time Allocation</h3>
+                 <div className="card-badge">Tag distribution</div>
+               </div>
+               <div className="chart-wrapper">
+                 <DonutChart data={tagStats} totalMs={totalTrackedMs || 0} />
+               </div>
             </div>
-            {templates.length === 0 ? (
-              <div className="profile-empty">No templates yet</div>
-            ) : (
-              <div className="template-list">
-                {templates.map(tpl => (
-                  <div key={tpl} className="template-item">
-                    <span className="template-item-name">{tpl}</span>
-                    <button className="template-remove-btn" onClick={() => onRemoveTemplate(tpl)}>×</button>
+
+            <div className="insights-card">
+              <BarChart data={tagStats} />
+            </div>
+
+            <div className="insights-card secondary-chart">
+               <div className="card-top">
+                 <h3 className="card-title">Productivity Rhythm</h3>
+               </div>
+               <div className="heatmap-container">
+                 <Heatmap allTasks={allTasks} now={now} mode={viewMode} selDate={selDate} />
+               </div>
+               <div className="heatmap-footer">
+                 <span>{viewMode === 'day' ? 'Hourly focus' : 'Daily trends'}</span>
+                 <span>Activity intensity</span>
+               </div>
+            </div>
+
+            <div className="insights-card wide-card">
+              <LineChart data={dailyTotals} />
+            </div>
+          </div>
+
+          <div className="tag-leaderboard">
+            <h3 className="card-title">Top Categories</h3>
+            <div className="leader-grid">
+              {tagStats.slice(0, 4).map(s => (
+                <div key={s.id} className="leader-item">
+                  <div className="leader-info">
+                    <span className="leader-dot" style={{ background: s.color }} />
+                    <span className="leader-name">{s.label}</span>
                   </div>
-                ))}
-              </div>
-            )}
+                  <div className="leader-time">{formatShort(s.ms)}</div>
+                </div>
+              ))}
+            </div>
           </div>
-
-          <div className="divider" />
-
-          <button className="profile-logout-btn" onClick={onLogout}>Sign out</button>
         </div>
       )}
+
+      {isAccount && (
+        <div className="view-container page-fade-in">
+          <div className="view-header">
+            <h1 className="view-title">Account</h1>
+            <div className="view-subtitle">Manage your profile and tools</div>
+          </div>
+
+          <div className="account-grid">
+            <div className="card-glass user-card">
+              <div className="user-info">
+                <div className="user-avatar-large">{user?.email?.charAt(0).toUpperCase() || 'U'}</div>
+                <div className="user-details">
+                  <div className="user-email">{user?.email}</div>
+                  <div className="user-plan">Premium Member</div>
+                </div>
+              </div>
+              <button className="logout-btn" onClick={onLogout}>Sign Out</button>
+            </div>
+
+            <div className="library-sections">
+              <div className="card-glass">
+                <div className="card-header">Favorite Tasks</div>
+                <div className="fav-list">
+                  {favoriteTasks.length === 0 && <div className="empty-msg">No favorites yet.</div>}
+                  {favoriteTasks.map(ft => (
+                    <div key={ft.id} className="fav-item">
+                      <span className="fav-name">{ft.name}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="card-glass">
+                <div className="card-header">Workflow Templates</div>
+                <div className="template-add-row">
+                  <input
+                    className="template-add-input"
+                    placeholder="Save a template…"
+                    value={templateInput}
+                    onChange={e => setTemplateInput(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && handleAddTemplate()}
+                  />
+                  <button className="template-add-btn" onClick={handleAddTemplate}>+</button>
+                </div>
+                {templates.length === 0 ? (
+                  <div className="profile-empty">No templates yet</div>
+                ) : (
+                  <div className="template-list">
+                    {templates.map(tpl => (
+                      <div key={tpl} className="template-item">
+                        <span className="template-item-name">{tpl}</span>
+                        <button className="template-remove-btn" onClick={() => onRemoveTemplate(tpl)}>×</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!isInsights && !isAccount && (
+        <div className="legacy-empty">Select a view from the sidebar</div>
+      )}
     </div>
+  )
+}
+
+function TodayDashboard({ activeTask, now, dayTasks, totalDayMs, longestSessMs }) {
+  const doneCount = dayTasks.filter(t => t.done).length
+  const totalCount = dayTasks.length
+  const progressPercent = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0
+  
+  return (
+    <aside className="panel-right-today page-fade-in">
+      <div className="dash-section active-focus-wrap">
+        <h3 className="dash-title">Current Focus</h3>
+        {activeTask ? (
+          <div className="active-card-focus">
+            <div className="active-glow" />
+            <div className="active-info">
+              <span className="active-name">{activeTask.name}</span>
+              <div className="active-timer">{formatLive(getTotalMs(activeTask, now))}</div>
+            </div>
+            <div className="active-sessions-count">
+              {activeTask.sessions.length} sessions today
+            </div>
+          </div>
+        ) : (
+          <div className="active-card-idle">
+            No active session. Time to pick a task!
+          </div>
+        )}
+      </div>
+
+      <div className="dash-section">
+        <h3 className="dash-title">Progress Overview</h3>
+        <div className="progress-card-today">
+          <div className="progress-ring-wrap">
+            <svg width="100" height="100" viewBox="0 0 100 100">
+              <circle cx="50" cy="50" r="40" fill="none" stroke="var(--bg-app)" strokeWidth="10" />
+              <circle 
+                cx="50" cy="50" r="40" 
+                fill="none" stroke="var(--amber)" strokeWidth="10" 
+                strokeDasharray={`${progressPercent * 2.51} 251`}
+                strokeLinecap="round"
+                style={{ transition: 'stroke-dasharray 0.5s ease' }}
+              />
+            </svg>
+            <div className="progress-val-today">{progressPercent}%</div>
+          </div>
+          <div className="progress-details">
+            <div className="prog-item"><strong>{doneCount}</strong>/{totalCount} Tasks</div>
+            <div className="prog-item"><strong>{formatShort(totalDayMs)}</strong> Focused</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="dash-section">
+        <h3 className="dash-title">Quick Stats</h3>
+        <div className="stats-mini-grid">
+          <div className="stat-mini-box">
+             <span className="mini-label">Peak</span>
+             <span className="mini-val">{longestSessMs > 0 ? formatShort(longestSessMs) : '--'}</span>
+          </div>
+          <div className="stat-mini-box">
+             <span className="mini-label">Rate</span>
+             <span className="mini-val">{progressPercent}%</span>
+          </div>
+        </div>
+      </div>
+      
+      <div className="dash-footer-tip">
+        "One step at a time is all it takes to build a legacy."
+      </div>
+    </aside>
   )
 }
 
@@ -802,7 +1093,7 @@ function RightPanel({ allTasks, favoriteTasks, selDate, now, weekStart, user, te
 
 export default function App() {
   // ── Tasks ──────────────────────────────────────────────────────────────────
-  const [tasks, setTasks] = useState(() => {
+  const [allTasks, setAllTasks] = useState(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY)
       if (saved) return JSON.parse(saved)
@@ -869,10 +1160,13 @@ export default function App() {
   const todayKey = toKey(new Date())
   const [selDate,       setSelDate]       = useState(todayKey)
   const [weekStart,     setWeekStart]     = useState(() => getWeekStart(new Date()))
+  const [activeNav,     setActiveNav]     = useState('today') // today, insights, account
   const [selTaskId,     setSelTaskId]     = useState(null)
   const [inputValue,    setInputValue]    = useState('')
+  const [suggestedTags, setSuggestedTags] = useState([])
+  const [planInput,      setPlanInput]      = useState('')
+  const [suggestedPlanTags, setSuggestedPlanTags] = useState([])
   const [selectedTag,   setSelectedTag]   = useState(null)
-  const [showTagPicker, setShowTagPicker] = useState(false)
   const [tick,          setTick]          = useState(0)
   const [timelineView,  setTimelineView]  = useState('day')
   const [editingTaskId, setEditingTaskId] = useState(null)
@@ -886,13 +1180,13 @@ export default function App() {
   // ── Favorites across all dates ─────────────────────────────────────────────
   const favoriteTasks = useMemo(() => {
     const all = []
-    Object.keys(tasks).forEach(dateKey => {
-      tasks[dateKey].forEach(task => {
+    Object.keys(allTasks).forEach(dateKey => {
+      allTasks[dateKey].forEach(task => {
         if (task.favorite) all.push({ ...task, dateKey })
       })
     })
     return all.sort((a, b) => b.createdAt - a.createdAt)
-  }, [tasks])
+  }, [allTasks])
 
   // ── Tick ───────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -902,7 +1196,7 @@ export default function App() {
 
   // ── Tab title ──────────────────────────────────────────────────────────────
   useEffect(() => {
-    const todayTasks = tasks[toKey(new Date())] ?? []
+    const todayTasks = allTasks[toKey(new Date())] ?? []
     const activeTask = todayTasks.find(t => getTaskStatus(t) === 'active')
     if (activeTask) {
       const ms = getTotalMs(activeTask, Date.now())
@@ -910,12 +1204,90 @@ export default function App() {
     } else {
       document.title = 'Echo'
     }
-  }, [tasks, tick])
+  }, [allTasks, tick])
 
-  // ── Persist tasks ──────────────────────────────────────────────────────────
+  // ── Midnight Split ──────────────────────────────────────────────────────────
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks))
-  }, [tasks])
+    const currentToday = toKey(new Date())
+    
+    // Check if there's any active task in a day that is NOT today
+    let foundActive = false
+    for (const dateKey in allTasks) {
+      if (dateKey === currentToday) continue
+      if (allTasks[dateKey].some(t => t.sessions.some(s => !s.endTime))) {
+        foundActive = true
+        break
+      }
+    }
+
+    if (foundActive) {
+      setAllTasks(prev => {
+        const next = { ...prev }
+        let changed = false
+
+        Object.keys(next).forEach(dateKey => {
+          if (dateKey === currentToday) return
+          
+          let dayChanged = false
+          const updatedDayTasks = next[dateKey].map(task => {
+            const activeSessIdx = task.sessions.findIndex(s => !s.endTime)
+            if (activeSessIdx !== -1) {
+              dayChanged = true
+              changed = true
+              
+              const activeSess = task.sessions[activeSessIdx]
+              const [y, m, d] = dateKey.split('-').map(Number)
+              
+              // Midnight of the next day (00:00:00)
+              const midnightNextDate = new Date(y, m - 1, d + 1, 0, 0, 0, 0)
+              const midnightNext = midnightNextDate.getTime()
+              const nextDayKey = toKey(midnightNextDate)
+
+              // 1. Close session on current dateKey
+              const nextSessions = [...task.sessions]
+              nextSessions[activeSessIdx] = { ...activeSess, endTime: midnightNext }
+              
+              // 2. Open task on the next day
+              const nextDayTasks = [...(next[nextDayKey] ?? [])]
+              // Avoid duplicate continuation if we somehow re-run
+              const alreadyContinued = nextDayTasks.find(t => 
+                t.name === task.name && 
+                t.sessions.some(s => s.startTime === midnightNext && !s.endTime)
+              )
+
+              if (!alreadyContinued) {
+                const newTask = {
+                  ...task,
+                  id: uid(),
+                  sessions: [{
+                    id: uid(),
+                    startTime: midnightNext,
+                    endTime: null
+                  }],
+                  done: false
+                }
+                next[nextDayKey] = [...nextDayTasks, newTask]
+              }
+
+              return { ...task, sessions: nextSessions }
+            }
+            return task
+          })
+
+          if (dayChanged) {
+            next[dateKey] = updatedDayTasks
+          }
+        })
+
+        return changed ? next : prev
+      })
+    }
+  }, [allTasks, tick])
+
+  // ── Persist allTasks ──────────────────────────────────────────────────────────
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(allTasks))
+  }, [allTasks])
 
   // ── Auto-scroll timeline ───────────────────────────────────────────────────
   useEffect(() => {
@@ -930,8 +1302,44 @@ export default function App() {
 
   // ── Derived ────────────────────────────────────────────────────────────────
   const now      = Date.now()
-  const dayTasks = tasks[selDate] ?? []
+  const dayTasks = useMemo(() => {
+    const raw = allTasks[selDate] ?? []
+    const undone = raw.filter(t => !t.done)
+    const done   = raw.filter(t => t.done)
+    return [...undone, ...done]
+  }, [allTasks, selDate])
+  const yesterdayKey = toKey(addDays(new Date(), -1))
+  const tomorrowKey  = toKey(addDays(new Date(),  1))
+  
+  const overdueTasks = useMemo(() => {
+    if (selDate !== todayKey) return []
+    return (allTasks[yesterdayKey] ?? []).filter(t => !t.done)
+  }, [allTasks, selDate, todayKey, yesterdayKey])
 
+  const plannedTasks = useMemo(() => {
+    if (selDate !== todayKey) return []
+    return allTasks[tomorrowKey] ?? []
+  }, [allTasks, selDate, todayKey, tomorrowKey])
+
+  const totalDayMs = useMemo(() => {
+    return dayTasks.reduce((acc, t) => acc + getTotalMs(t, now), 0)
+  }, [dayTasks, now])
+
+  const activeTask = useMemo(() => {
+    return dayTasks.find(t => getTaskStatus(t) === 'active')
+  }, [dayTasks, tick])
+
+  const maxSessMsToday = useMemo(() => {
+    let max = 0
+    dayTasks.forEach(t => {
+      (t.sessions || []).forEach(s => {
+        const dur = (s.endTime ?? now) - s.startTime
+        if (dur > max) max = dur
+      })
+    })
+    return max
+  }, [dayTasks, now])
+  
   const weekDays = useMemo(() => {
     return Array.from({ length: 7 }, (_, i) => {
       const d = addDays(weekStart, i)
@@ -961,9 +1369,20 @@ export default function App() {
   // ── Task actions ────────────────────────────────────────────────────────────
 
   const addTask = useCallback(() => {
-    const name = inputValue.trim()
+    let name = inputValue.trim()
     if (!name) return
-    const currentDayTasks = tasks[selDate] ?? []
+
+    let finalTags = selectedTag ? [selectedTag] : ['other']
+    const tagMatch = name.match(/#(\w+)/)
+    if (tagMatch) {
+      const found = DEFAULT_TAGS.find(t => t.id === tagMatch[1].toLowerCase() || t.label.toLowerCase() === tagMatch[1].toLowerCase())
+      if (found) {
+        finalTags = [found.id]
+        name = name.replace(tagMatch[0], '').trim()
+      }
+    }
+
+    const currentDayTasks = allTasks[selDate] ?? []
     const task = {
       id:       uid(),
       name,
@@ -971,19 +1390,19 @@ export default function App() {
       done:     false,
       colorIdx: currentDayTasks.length % TASK_PALETTE.length,
       createdAt: Date.now(),
-      tags:     selectedTag ? [selectedTag] : ['other'],
+      tags:     finalTags,
       favorite: false,
     }
-    setTasks(prev => ({ ...prev, [selDate]: [...(prev[selDate] ?? []), task] }))
+    setAllTasks(prev => ({ ...prev, [selDate]: [...(prev[selDate] ?? []), task] }))
     setSelTaskId(task.id)
     setInputValue('')
     setSelectedTag(null)
-    setShowTagPicker(false)
+    setSuggestedTags([])
     inputRef.current?.focus()
-  }, [inputValue, selDate, selectedTag])
+  }, [inputValue, selDate, selectedTag, allTasks])
 
   const updateTask = useCallback((id, updater) => {
-    setTasks(prev => ({
+    setAllTasks(prev => ({
       ...prev,
       [selDate]: (prev[selDate] ?? []).map(t => t.id === id ? updater(t) : t),
     }))
@@ -991,7 +1410,7 @@ export default function App() {
 
   // Toggles favorite across ALL dates (not just selDate)
   const toggleFavorite = useCallback((taskId) => {
-    setTasks(prev => {
+    setAllTasks(prev => {
       const next = {}
       Object.keys(prev).forEach(key => {
         next[key] = prev[key].map(t => t.id === taskId ? { ...t, favorite: !t.favorite } : t)
@@ -1002,7 +1421,7 @@ export default function App() {
 
   const startTask = useCallback((id) => {
     const now = Date.now()
-    setTasks(prev => ({
+    setAllTasks(prev => ({
       ...prev,
       [selDate]: (prev[selDate] ?? []).map(t => {
         if (t.id === id) {
@@ -1031,31 +1450,170 @@ export default function App() {
     }))
   }, [updateTask])
 
+  const carryOverTask = useCallback((task) => {
+    const newTask = {
+      ...task,
+      id: uid(),
+      sessions: [],
+      createdAt: Date.now(),
+      done: false
+    }
+    setAllTasks(prev => ({
+      ...prev,
+      [todayKey]: [...(prev[todayKey] ?? []), newTask],
+      [yesterdayKey]: (prev[yesterdayKey] ?? []).map(t => t.id === task.id ? { ...t, done: true, carriedOver: true } : t)
+    }))
+    setSelTaskId(newTask.id)
+  }, [todayKey, yesterdayKey])
+
+  const planForTomorrow = useCallback((rawName) => {
+    let name = rawName.trim()
+    if (!name) return
+
+    let finalTags = ['other']
+    const tagMatch = name.match(/#(\w+)/)
+    if (tagMatch) {
+      const found = DEFAULT_TAGS.find(t => t.id === tagMatch[1].toLowerCase() || t.label.toLowerCase() === tagMatch[1].toLowerCase())
+      if (found) {
+        finalTags = [found.id]
+        name = name.replace(tagMatch[0], '').trim()
+      }
+    }
+
+    const newTask = {
+      id: uid(),
+      name,
+      sessions: [],
+      done: false,
+      colorIdx: (allTasks[tomorrowKey]?.length ?? 0) % TASK_PALETTE.length,
+      createdAt: Date.now(),
+      tags: finalTags
+    }
+    setAllTasks(prev => ({ ...prev, [tomorrowKey]: [...(prev[tomorrowKey] ?? []), newTask] }))
+    setPlanInput('')
+    setSuggestedPlanTags([])
+  }, [tomorrowKey, allTasks])
+
   const deleteTask = useCallback((id) => {
-    setTasks(prev => ({
+    setAllTasks(prev => ({
       ...prev,
       [selDate]: (prev[selDate] ?? []).filter(t => t.id !== id),
     }))
     setSelTaskId(prev => (prev === id ? null : prev))
   }, [selDate])
 
-  const renameTask = useCallback((id, newName) => {
-    updateTask(id, t => ({ ...t, name: newName.trim() || t.name }))
+  const renameTask = useCallback((id, newName, dateKey = selDate) => {
+    setAllTasks(prev => ({
+      ...prev,
+      [dateKey]: (prev[dateKey] ?? []).map(t => t.id === id ? { ...t, name: newName.trim() || t.name } : t),
+    }))
     setEditingTaskId(null)
-  }, [updateTask])
+  }, [selDate])
 
   const deleteSession = useCallback((taskId, sessId) => {
     updateTask(taskId, t => ({ ...t, sessions: t.sessions.filter(s => s.id !== sessId) }))
   }, [updateTask])
 
+  const updatePlannedSession = useCallback((taskId, planId, key, newVal) => {
+    // newVal is HH:mm
+    const parts = newVal.split(':')
+    if (parts.length !== 2) return
+    const h = parseInt(parts[0], 10), m = parseInt(parts[1], 10)
+    if (isNaN(h) || isNaN(m) || h < 0 || h > 23 || m < 0 || m > 59) return
+
+    updateTask(taskId, t => ({
+      ...t,
+      plannedSessions: (t.plannedSessions ?? []).map(p => {
+        if (p.id !== planId) return p
+        const d = new Date(p[key] || Date.now())
+        d.setHours(h, m, 0, 0)
+        return { ...p, [key]: d.getTime() }
+      })
+    }))
+  }, [updateTask])
+
+  const addPlannedSession = useCallback((taskId, dateKey, startHour) => {
+    setAllTasks(prev => {
+      const next = { ...prev }
+      let targetTask = null
+      let sourceKey = null
+
+      // Look in selDate, tomorrowKey, and other dates
+      const keys = [dateKey, tomorrowKey, ...Object.keys(next).filter(k => k !== dateKey && k !== tomorrowKey)]
+      for (const k of keys) {
+        const found = (next[k] ?? []).find(t => t.id === taskId)
+        if (found) { targetTask = found; sourceKey = k; break }
+      }
+
+      if (!targetTask) return prev
+
+      const d = new Date(dateKey + 'T12:00:00')
+      d.setHours(Math.floor(startHour), (startHour % 1) * 60, 0, 0)
+      const startTime = d.getTime()
+      const endTime = startTime + 60 * 60 * 1000 // default 1h
+
+      const updatedTask = { 
+        ...targetTask, 
+        plannedSessions: [...(targetTask.plannedSessions ?? []), { id: uid(), startTime, endTime }] 
+      }
+
+      if (sourceKey !== dateKey) {
+        // Move or copy to target date?
+        // User wants to plan for THIS date, so if it's from another date, we add it here
+        if (!next[dateKey].some(t => t.id === taskId)) {
+          next[dateKey] = [updatedTask, ...(next[dateKey] ?? [])]
+        } else {
+          next[dateKey] = next[dateKey].map(t => t.id === taskId ? updatedTask : t)
+        }
+      } else {
+        next[dateKey] = next[dateKey].map(t => t.id === taskId ? updatedTask : t)
+      }
+      return next
+    })
+  }, [tomorrowKey])
+
+  const deletePlannedSession = useCallback((taskId, dateKey, planId) => {
+    updateTask(taskId, t => ({
+      ...t,
+      plannedSessions: (t.plannedSessions ?? []).filter(p => p.id !== planId)
+    }))
+  }, [updateTask])
+
+  const setGoalTime = useCallback((taskId, dateKey, timeStr) => {
+    // timeStr like "14:30"
+    const [h, m] = timeStr.split(':').map(Number)
+    if (isNaN(h) || isNaN(m)) return
+
+    const d = new Date(dateKey + 'T12:00:00')
+    d.setHours(h, m, 0, 0)
+    const startTime = d.getTime()
+    const endTime = startTime + 60 * 60 * 1000 // 1h default
+
+    updateTask(taskId, t => {
+      // For simplicity, we'll replace or add a primary planned session
+      const others = (t.plannedSessions ?? []).filter(p => p.isPrimary !== true)
+      return {
+        ...t,
+        plannedSessions: [...others, { id: uid(), startTime, endTime, isPrimary: true }]
+      }
+    })
+  }, [updateTask])
   const updateSession = useCallback((taskId, sessId, key, newVal) => {
-    // newVal is expected as a timestamp or HM string we parse
+    // newVal is expected as a string like "14:30"
+    const parts = newVal.split(':')
+    if (parts.length !== 2) return // Wait for complete entry
+
+    const h = parseInt(parts[0], 10)
+    const m = parseInt(parts[1], 10)
+    
+    // Simple validation
+    if (isNaN(h) || isNaN(m) || h < 0 || h > 23 || m < 0 || m > 59) return 
+
     updateTask(taskId, task => ({
       ...task,
       sessions: task.sessions.map(s => {
         if (s.id !== sessId) return s
         const d = new Date(s[key] || Date.now())
-        const [h, m] = newVal.split(':').map(Number)
         d.setHours(h, m, 0, 0)
         return { ...s, [key]: d.getTime() }
       })
@@ -1063,15 +1621,15 @@ export default function App() {
   }, [updateTask])
 
   const handleSort = useCallback(() => {
-    const currentTasks = [...(tasks[selDate] ?? [])].map((t, i) => ({
+    const currentTasks = [...(allTasks[selDate] ?? [])].map((t, i) => ({
       ...t, colorIdx: t.colorIdx ?? (i % TASK_PALETTE.length),
     }))
     const dragged = currentTasks.splice(dragItem.current, 1)[0]
     currentTasks.splice(dragOverItem.current, 0, dragged)
     dragItem.current = null
     dragOverItem.current = null
-    setTasks(prev => ({ ...prev, [selDate]: currentTasks }))
-  }, [selDate, tasks])
+    setAllTasks(prev => ({ ...prev, [selDate]: currentTasks }))
+  }, [selDate, allTasks])
 
   const toggleTag = useCallback((tagId) => {
     setSelectedTag(prev => prev === tagId ? null : tagId)
@@ -1094,20 +1652,56 @@ export default function App() {
   // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
-    <div className="app">
-
-      {/* ── HEADER ─────────────────────────────────────────────────────────── */}
-      <header className="header">
-        <div className="header-brand">
-          <span className="brand-text">ECHO<span className="brand-dot" /></span>
+    <div className="app-wrapper">
+      {/* ── NAV STRIP (Far Left - Full Height) ────────────────────────────────── */}
+      <nav className="nav-strip">
+        <div className="nav-avatar">L</div>
+        <div className="nav-items">
+          <div 
+            className={`nav-item${activeNav === 'today' ? ' nav-item--active' : ''}`} 
+            title="Today"
+            onClick={() => setActiveNav('today')}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 11 12 14 22 4"></polyline><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
+          </div>
+          <div 
+            className={`nav-item${activeNav === 'insights' ? ' nav-item--active' : ''}`} 
+            title="Insights"
+            onClick={() => setActiveNav('insights')}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18"></path><path d="m19 9-5 5-4-4-3 3"></path></svg>
+          </div>
+          <div 
+            className={`nav-item${activeNav === 'account' ? ' nav-item--active' : ''}`} 
+            title="Account"
+            onClick={() => setActiveNav('account')}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="12" r="4"></circle></svg>
+          </div>
         </div>
+        <div className="nav-footer">
+           <div className="nav-item" title="Notifications">
+             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"></path><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"></path></svg>
+           </div>
+           <div className="nav-item" title="Help">
+             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><line x1="12" x2="12.01" y1="17" y2="17"></line></svg>
+           </div>
+        </div>
+      </nav>
+
+      <div className="app-main-area">
+        {/* ── HEADER ─────────────────────────────────────────────────────────── */}
+        <header className="header">
+          <div className="header-brand">
+            <span className="brand-text">ECHO<span className="brand-dot" /></span>
+          </div>
 
         <nav className="header-nav">
           <button className="nav-arrow" onClick={prevWeek} title="Previous week">&#8249;</button>
           {weekDays.map(day => {
             const isSelDay   = day.key === selDate
             const isTodayDay = day.key === todayKey
-            const hasTasks   = (tasks[day.key]?.length ?? 0) > 0
+            const hasTasks   = (allTasks[day.key]?.length ?? 0) > 0
             return (
               <button
                 key={day.key}
@@ -1139,311 +1733,604 @@ export default function App() {
 
       {/* ── BODY ───────────────────────────────────────────────────────────── */}
       <div className="body">
-
-        {/* ── LEFT PANEL ─────────────────────────────────────────────────── */}
-        <aside className="panel-left">
-          <div className="panel-left-header">
-            <div className="panel-day-name">{selDayName}</div>
-            <div className="panel-day-date">{selDayNum} {selMonthStr}</div>
-          </div>
-
-          {/* Add task */}
-          <div className="add-task-row">
-            <div className="add-task-input-wrap">
-              <input
-                ref={inputRef}
-                className="add-task-input"
-                type="text"
-                placeholder="Add a task… (Enter)"
-                value={inputValue}
-                onChange={e => setInputValue(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') addTask() }}
-              />
-              <button
-                className={`btn-tag-toggle${showTagPicker ? ' btn-tag-toggle--active' : ''}`}
-                onClick={() => setShowTagPicker(p => !p)}
-                title="Add tags"
-              >
-                #
-              </button>
-              <button className="btn-add-task" onClick={addTask} title="Add task">+</button>
-            </div>
-
-            {/* Tag picker */}
-            {showTagPicker && (
-              <div className="tag-picker-row">
-                {DEFAULT_TAGS.map(tag => {
-                  const isActive = selectedTag === tag.id
-                  return (
-                    <button
-                      key={tag.id}
-                      className={`tag-pill${isActive ? ' tag-pill--active' : ''}`}
-                      style={isActive
-                        ? { background: tag.dot, color: '#fff',   borderColor: tag.dot }
-                        : { background: '#fff',  color: tag.textColor, borderColor: tag.border || tag.dot }
-                      }
-                      onClick={() => toggleTag(tag.id)}
-                    >
-                      {tag.label}
-                    </button>
-                  )
-                })}
+        {activeNav === 'today' && (
+          <>
+            {/* ── LEFT PANEL ─────────────────────────────────────────────────── */}
+            <aside className="panel-left">
+              <div className="panel-left-header">
+                <h2 className="panel-title">{isToday ? 'Focus Board' : (selDayName || 'Tasks')}</h2>
               </div>
-            )}
-
-            {/* Quick Favorites Tray */}
-            {favoriteTasks.length > 0 && (
-              <div className="favorites-tray">
-                {Array.from(new Set(favoriteTasks.map(t => t.name))).slice(0, 8).map(name => {
-                  const firstFav = favoriteTasks.find(t => t.name === name)
-                  return (
-                    <button
-                      key={name}
-                      className="fav-chip"
-                      onClick={() => {
-                        const taskToAdd = {
-                          id:       uid(),
-                          name:     name,
-                          sessions: [],
-                          done:     false,
-                          colorIdx: (tasks[selDate]?.length ?? 0) % TASK_PALETTE.length,
-                          createdAt: Date.now(),
-                          tags:     firstFav.tags ?? ['other'],
-                          favorite: true,
-                        }
-                        setTasks(prev => ({ ...prev, [selDate]: [...(prev[selDate] ?? []), taskToAdd] }))
-                        setSelTaskId(taskToAdd.id)
-                      }}
-                    >
-                      {name}
-                    </button>
-                  )
-                })}
-              </div>
-            )}
-          </div>
-
-          {/* Task list header */}
-          <div className="task-list-header">
-            <span className="task-list-title">
-              Tasks {dayTasks.length > 0 ? `· ${dayTasks.length}` : ''}
-            </span>
-          </div>
-
-          {/* Task list */}
-          <div className="task-list">
-            {dayTasks.length === 0 && (
-              <div className="task-card-empty">No tasks for this day</div>
-            )}
-
-            {dayTasks.map((task, i) => {
-              const status      = getTaskStatus(task)
-              const totalMs     = getTotalMs(task, now)
-              const isExpanded  = selTaskId === task.id
-              const taskPalette = { ...TASK_PALETTE[task.colorIdx ?? (i % TASK_PALETTE.length)] }
-              const taskTags    = (task.tags ?? []).map(id => DEFAULT_TAGS.find(t => t.id === id)).filter(Boolean)
-              const firstTag    = taskTags[0]
-              
-              if (firstTag) {
-                taskPalette.dot = firstTag.dot || firstTag.color
-                taskPalette.bg  = firstTag.bg
-                taskPalette.border = firstTag.border || firstTag.dot || firstTag.color
-              }
-
-              const isFav       = task.favorite ?? false
-
-              let metaText = 'not started'
-              if (status === 'active') metaText = formatLive(totalMs)
-              else if (totalMs > 0)   metaText = formatShort(totalMs)
-
-              return (
-                <div
-                  key={task.id}
-                  className={['task-card', `task-card--${status}`, isExpanded ? 'task-card--selected' : ''].filter(Boolean).join(' ')}
-                  style={{ animationDelay: `${i * 0.035}s` }}
-                  onClick={() => setSelTaskId(prev => prev === task.id ? null : task.id)}
-                  draggable
-                  onDragStart={(e) => { dragItem.current = i; e.currentTarget.style.opacity = '0.5' }}
-                  onDragEnter={()  => { dragOverItem.current = i }}
-                  onDragEnd={(e)   => { e.currentTarget.style.opacity = '1'; handleSort() }}
-                  onDragOver={(e)  => e.preventDefault()}
-                >
-                  <div className="task-card-top">
-                    <span className="status-dot" style={{ background: taskPalette.dot }} />
-                    {editingTaskId === task.id ? (
-                      <input
-                        className="task-rename-input"
-                        autoFocus
-                        value={editNameValue}
-                        onChange={e => setEditNameValue(e.target.value)}
-                        onBlur={() => renameTask(task.id, editNameValue)}
-                        onKeyDown={e => {
-                          if (e.key === 'Enter') renameTask(task.id, editNameValue)
-                          if (e.key === 'Escape') setEditingTaskId(null)
-                        }}
-                        onClick={e => e.stopPropagation()}
-                      />
-                    ) : (
-                      <span
-                        className="task-card-name"
-                        onDoubleClick={(e) => {
-                          e.stopPropagation()
-                          setEditingTaskId(task.id)
-                          setEditNameValue(task.name)
-                        }}
-                      >
-                        {task.name}
-                        <button
-                          className="btn-edit-inline"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            setEditingTaskId(task.id)
-                            setEditNameValue(task.name)
-                          }}
-                          title="Rename task"
-                        >
-                          ✎
-                        </button>
-                      </span>
-                    )}
-                    <button
-                      className={`task-heart${isFav ? ' task-heart--active' : ''}`}
-                      onClick={e => { e.stopPropagation(); toggleFavorite(task.id) }}
-                      title={isFav ? 'Remove from favorites' : 'Add to favorites'}
-                    >
-                      {isFav ? '♥' : '♡'}
-                    </button>
+              <div className="task-board">
+                {/* ── Yesterday / Overdue ── */}
+                <div className="board-col">
+                  <div className="board-header">
+                    <span className="board-title">Overdue</span>
+                    <span className="board-count">{overdueTasks.length}</span>
                   </div>
+                  <div className="board-content">
+                    {overdueTasks.length > 0 ? (
+                      overdueTasks.map(t => (
+                        <div key={t.id} className="mini-task-card">
+                          <div className="mini-task-info">
+                            <span className="mini-task-dot" style={{ background: TASK_PALETTE[t.colorIdx ?? 0].dot }} />
+                            <span className="mini-task-name">{t.name}</span>
+                          </div>
+                          <button className="mini-task-action" onClick={() => carryOverTask(t)} title="Bring to today">↳</button>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="board-empty">Nothing left over.</div>
+                    )}
+                  </div>
+                </div>
 
-                  {/* Tag chips */}
-                  {taskTags.length > 0 && (
-                    <div className="task-card-tags">
-                      {taskTags.map(tag => (
-                        <span
-                          key={tag.id}
-                          className="task-tag-chip"
-                          style={{ background: tag.bg, color: tag.textColor, border: `1px solid ${tag.border || tag.dot}` }}
-                        >
-                          {tag.label}
-                        </span>
-                      ))}
-                    </div>
-                  )}
+                {/* ── Today ── */}
+                <div className="board-col" style={{ flex: 1.2 }}>
+                  <div className="board-header">
+                    <span className="board-title">
+                      Today's Focus
+                      {totalDayMs > 0 && <span className="board-title-ms"> · {formatShort(totalDayMs)}</span>}
+                    </span>
+                    <span className="board-count">{dayTasks.length}</span>
+                  </div>
+                  <div className="board-content">
 
-                  <div className="task-card-meta" style={{ color: taskPalette.dot }}>{metaText}</div>
-
-                  {isExpanded && (
-                    <div className="task-card-actions" onClick={e => e.stopPropagation()}>
-                      {status === 'idle' && task.sessions.length === 0 && (
-                        <button className="btn btn--start" onClick={() => startTask(task.id)} disabled={selDate !== toKey(new Date())}>▶ Start</button>
-                      )}
-                      {status === 'idle' && task.sessions.length > 0 && (
-                        <button className="btn btn--start" onClick={() => startTask(task.id)} disabled={selDate !== toKey(new Date())}>↺ Resume</button>
-                      )}
-                      {status === 'active' && (
-                        <>
-                          <button className="btn" onClick={() => { pauseTask(task.id); setSelTaskId(task.id) }}>⏸ Pause</button>
-                          <button className="btn btn--done" onClick={() => doneTask(task.id)}>✓ Done</button>
-                        </>
-                      )}
-                      {status === 'done' && (
-                        <button className="btn" onClick={() => startTask(task.id)} disabled={selDate !== toKey(new Date())}>↺ Reopen</button>
-                      )}
-                      <button className="btn btn--delete" onClick={() => deleteTask(task.id)}>✕ Delete task</button>
-
-                      {/* Sessions editor */}
-                      {task.sessions.length > 0 && (
-                        <div className="task-sessions-list">
-                          <div className="task-sessions-header">Edit sessions</div>
-                          {task.sessions.map((s, idx) => (
-                            <div key={s.id || idx} className="session-edit-row">
-                              <input
-                                type="time"
-                                className="session-time-input"
-                                value={formatHM(s.startTime)}
-                                onChange={e => updateSession(task.id, s.id, 'startTime', e.target.value)}
-                              />
-                              <span className="session-time-sep">to</span>
-                              {s.endTime ? (
-                                <input
-                                  type="time"
-                                  className="session-time-input"
-                                  value={formatHM(s.endTime)}
-                                  onChange={e => updateSession(task.id, s.id, 'endTime', e.target.value)}
-                                />
-                              ) : (
-                                <span className="session-time-live">Active now</span>
-                              )}
-                              <button
-                                className="btn-session-del"
-                                onClick={() => deleteSession(task.id, s.id)}
-                                title="Remove session"
-                              >
-                                ×
+                    <div className="add-task-row" style={{ padding: '0 0 12px 0' }}>
+                      <div className="add-task-input-wrap">
+                        <input
+                          ref={inputRef}
+                          className="add-task-input"
+                          type="text"
+                          placeholder="What's next? (use # for tags)"
+                          value={inputValue}
+                          onChange={e => {
+                            const val = e.target.value
+                            setInputValue(val)
+                            const lastWord = val.split(' ').pop()
+                            if (lastWord.startsWith('#')) {
+                              const search = lastWord.slice(1).toLowerCase()
+                              setSuggestedTags(DEFAULT_TAGS.filter(t => t.label.toLowerCase().startsWith(search)))
+                            } else {
+                              setSuggestedTags([])
+                            }
+                          }}
+                          onKeyDown={e => { if (e.key === 'Enter') addTask() }}
+                        />
+                        <button className="btn-add-task" onClick={addTask} title="Add task">+</button>
+                        
+                        {suggestedTags.length > 0 && (
+                          <div className="smart-tag-suggestions">
+                            {suggestedTags.map(tag => (
+                              <button key={tag.id} className="suggestion-chip" onClick={() => {
+                                const words = inputValue.split(' ')
+                                words.pop()
+                                setInputValue([...words, `#${tag.label}`, ''].join(' '))
+                                setSuggestedTags([])
+                                inputRef.current?.focus()
+                              }}>
+                                <span className="mini-task-dot" style={{ background: tag.dot, marginRight: 6 }} />
+                                {tag.label}
                               </button>
-                            </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                {/* Quick Favorites Tray */}
+                {favoriteTasks.length > 0 && (
+                  <div className="favorites-tray">
+                    {Array.from(new Set(favoriteTasks.map(t => t.name))).slice(0, 8).map(name => {
+                      const firstFav = favoriteTasks.find(t => t.name === name)
+                      return (
+                        <button
+                          key={name}
+                          className="fav-chip"
+                          onClick={() => {
+                            const taskToAdd = {
+                              id:       uid(),
+                              name:     name,
+                              sessions: [],
+                              done:     false,
+                              colorIdx: (allTasks[selDate]?.length ?? 0) % TASK_PALETTE.length,
+                              createdAt: Date.now(),
+                              tags:     firstFav.tags ?? ['other'],
+                              favorite: true,
+                            }
+                            setAllTasks(prev => ({ ...prev, [selDate]: [...(prev[selDate] ?? []), taskToAdd] }))
+                            setSelTaskId(taskToAdd.id)
+                          }}
+                        >
+                          {name}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+
+
+              {/* Task list */}
+              <div className="task-list">
+                {dayTasks.length === 0 && (
+                  <div className="task-card-empty">No tasks for this day</div>
+                )}
+
+                {dayTasks.map((task, i) => {
+                  const status      = getTaskStatus(task)
+                  const totalMs     = getTotalMs(task, now)
+                  const isExpanded  = selTaskId === task.id
+                  const taskPalette = { ...TASK_PALETTE[task.colorIdx ?? (i % TASK_PALETTE.length)] }
+                  const taskTags    = (task.tags ?? []).map(id => DEFAULT_TAGS.find(t => t.id === id)).filter(Boolean)
+                  const firstTag    = taskTags[0]
+                  
+                  if (firstTag) {
+                    taskPalette.dot = firstTag.dot || firstTag.color
+                    taskPalette.bg  = firstTag.bg
+                    taskPalette.border = firstTag.border || firstTag.dot || firstTag.color
+                  }
+
+                  const isFav       = task.favorite ?? false
+
+                  let metaText = 'not started'
+                  if (status === 'active') metaText = formatLive(totalMs)
+                  else if (totalMs > 0)   metaText = formatShort(totalMs)
+
+                  return (
+                    <div
+                      key={task.id}
+                      className={['task-card', `task-card--${status}`, isExpanded ? 'task-card--selected' : ''].filter(Boolean).join(' ')}
+                      style={{ animationDelay: `${i * 0.035}s` }}
+                      onClick={() => setSelTaskId(prev => prev === task.id ? null : task.id)}
+                      draggable
+                      onDragStart={(e) => { dragItem.current = i; e.currentTarget.style.opacity = '0.5' }}
+                      onDragEnter={()  => { dragOverItem.current = i }}
+                      onDragEnd={(e)   => { e.currentTarget.style.opacity = '1'; handleSort() }}
+                      onDragOver={(e)  => e.preventDefault()}
+                    >
+                      <div className="task-card-top">
+                        <span className="status-dot" style={{ background: taskPalette.dot }} />
+                        {editingTaskId === task.id ? (
+                          <input
+                            className="task-rename-input"
+                            autoFocus
+                            value={editNameValue}
+                            onChange={e => setEditNameValue(e.target.value)}
+                            onBlur={() => renameTask(task.id, editNameValue)}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') renameTask(task.id, editNameValue)
+                              if (e.key === 'Escape') setEditingTaskId(null)
+                            }}
+                            onClick={e => e.stopPropagation()}
+                          />
+                        ) : (
+                          <span
+                            className="task-card-name"
+                            onDoubleClick={(e) => {
+                              e.stopPropagation()
+                              setEditingTaskId(task.id)
+                              setEditNameValue(task.name)
+                            }}
+                          >
+                            {task.name}
+                            <button
+                              className="btn-edit-inline"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setEditingTaskId(task.id)
+                                setEditNameValue(task.name)
+                              }}
+                              title="Rename task"
+                            >
+                              ✎
+                            </button>
+                          </span>
+                        )}
+                        <div className="task-card-actions">
+                          <button
+                            className={`task-heart${isFav ? ' task-heart--active' : ''}`}
+                            onClick={e => { e.stopPropagation(); toggleFavorite(task.id) }}
+                            title={isFav ? 'Remove from favorites' : 'Add to favorites'}
+                          >
+                            {isFav ? '♥' : '♡'}
+                          </button>
+                          
+                          <button 
+                            className="btn-card-action-subtle btn-card-del-subtle" 
+                            onClick={(e) => { e.stopPropagation(); deleteTask(task.id) }}
+                            title="Delete task"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Tag chips */}
+                      {taskTags.length > 0 && (
+                        <div className="task-card-tags">
+                          {taskTags.map(tag => (
+                            <span
+                              key={tag.id}
+                              className="task-tag-chip"
+                              style={{ background: tag.bg, color: tag.textColor, border: `1px solid ${tag.border || tag.dot}` }}
+                            >
+                              {tag.label}
+                            </span>
                           ))}
                         </div>
                       )}
 
-                      {/* Inline Tag Picker for Task */}
-                      <div className="task-inline-tags">
-                        {DEFAULT_TAGS.map(tag => {
-                          const isActive = (task.tags ?? []).includes(tag.id)
-                          return (
-                            <button
-                              key={tag.id}
-                              className={`tag-pill${isActive ? ' tag-pill--active' : ''}`}
-                              style={isActive
-                                ? { background: tag.dot, color: '#fff',   borderColor: tag.dot }
-                                : { background: '#fff',  color: tag.textColor, borderColor: tag.border || tag.dot }
-                              }
-                              onClick={() => {
-                                updateTask(task.id, t => {
-                                  const next = [tag.id] // Force single tag selection
-                                  return { ...t, tags: next }
-                                })
-                              }}
-                            >
-                              {tag.label}
-                            </button>
-                          )
-                        })}
+                      <div className="task-card-meta-row">
+                        <div className="task-card-meta" style={{ color: taskPalette.dot }}>{metaText}</div>
+                        {task.sessions.length > 0 && (
+                          <div className="task-sessions-mini-graph">
+                            {task.sessions.map((s, idx) => {
+                              const dur = (s.endTime ?? now) - s.startTime
+                              const w = Math.min(24, Math.max(3, (dur / 60000) * 0.4))
+                              return (
+                                <div 
+                                  key={idx} 
+                                  className="sess-mini-bar" 
+                                  style={{ width: w, background: taskPalette.dot, opacity: s.endTime ? 0.35 : 0.8 }} 
+                                />
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      {isExpanded && (
+                        <div className="task-card-actions" onClick={e => e.stopPropagation()}>
+                          {status === 'idle' && task.sessions.length === 0 && (
+                            <button className="btn btn--start" onClick={() => startTask(task.id)} disabled={selDate !== toKey(new Date())}>▶ Start</button>
+                          )}
+                          {status === 'idle' && task.sessions.length > 0 && (
+                            <button className="btn btn--start" onClick={() => startTask(task.id)} disabled={selDate !== toKey(new Date())}>↺ Resume</button>
+                          )}
+                          {status === 'active' && (
+                            <>
+                              <button className="btn" onClick={() => { pauseTask(task.id); setSelTaskId(task.id) }}>⏸ Pause</button>
+                              <button className="btn btn--done" onClick={() => doneTask(task.id)}>✓ Done</button>
+                            </>
+                          )}
+                          {status === 'done' && (
+                            <button className="btn" onClick={() => startTask(task.id)} disabled={selDate !== toKey(new Date())}>↺ Reopen</button>
+                          )}
+                          <button className="btn btn--delete" onClick={() => deleteTask(task.id)}>✕ Delete task</button>
+
+                          {/* Sessions editor */}
+                          {task.sessions.length > 0 && (
+                            <div className="task-sessions-list">
+                              <div className="task-sessions-header">Edit sessions</div>
+                              {task.sessions.map((s, idx) => (
+                                <div key={s.id || idx} className="session-edit-row">
+                                  <input
+                                    type="text"
+                                    className="session-time-input"
+                                    value={formatHM(s.startTime)}
+                                    placeholder="00:00"
+                                    onChange={e => updateSession(task.id, s.id, 'startTime', e.target.value)}
+                                  />
+                                  <span className="session-time-sep">to</span>
+                                  {s.endTime ? (
+                                    <input
+                                      type="text"
+                                      className="session-time-input"
+                                      value={formatHM(s.endTime)}
+                                      placeholder="00:00"
+                                      onChange={e => updateSession(task.id, s.id, 'endTime', e.target.value)}
+                                    />
+                                  ) : (
+                                    <span className="session-time-live">Active now</span>
+                                  )}
+                                  <button
+                                    className="btn-session-del"
+                                    onClick={() => deleteSession(task.id, s.id)}
+                                    title="Remove session"
+                                  >
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Inline Tag Picker for Task */}
+                          <div className="task-inline-tags">
+                            {DEFAULT_TAGS.map(tag => {
+                              const isActive = (task.tags ?? []).includes(tag.id)
+                              return (
+                                <button
+                                  key={tag.id}
+                                  className={`tag-pill${isActive ? ' tag-pill--active' : ''}`}
+                                  style={isActive
+                                    ? { background: tag.dot, color: '#fff',   borderColor: tag.dot }
+                                    : { background: '#fff',  color: tag.textColor, borderColor: tag.border || tag.dot }
+                                  }
+                                  onClick={() => {
+                                    updateTask(task.id, t => {
+                                      const next = [tag.id] // Force single tag selection
+                                      return { ...t, tags: next }
+                                    })
+                                  }}
+                                >
+                                  {tag.label}
+                                </button>
+                              )
+                            })}
+                          </div>
+
+                          {/* Plans editor (Ghosts) */}
+                          {(task.plannedSessions ?? []).length > 0 && (
+                            <div className="task-sessions-list" style={{ marginTop: 16 }}>
+                              <div className="task-sessions-header">Ghost Intention (Planned)</div>
+                              {(task.plannedSessions ?? []).map((p, pIdx) => (
+                                <div key={p.id || pIdx} className="session-edit-row">
+                                  <input 
+                                    type="text" 
+                                    className="session-time-input" 
+                                    style={{ borderStyle: 'dashed' }}
+                                    defaultValue={formatHM(p.startTime)}
+                                    onBlur={e => updatePlannedSession(task.id, p.id, 'startTime', e.target.value)}
+                                  />
+                                  <span className="session-time-sep">to</span>
+                                  <input 
+                                    type="text" 
+                                    className="session-time-input" 
+                                    style={{ borderStyle: 'dashed' }}
+                                    defaultValue={formatHM(p.endTime)}
+                                    onBlur={e => updatePlannedSession(task.id, p.id, 'endTime', e.target.value)}
+                                  />
+                                  <button
+                                    className="btn-session-del"
+                                    onClick={() => deletePlannedSession(task.id, selDate, p.id)}
+                                    title="Remove ghost"
+                                  >
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          <div className="task-goal-row" style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+                            <div className="task-sessions-header">New Mirror Intent (Goal)</div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                               <input 
+                                 type="text" 
+                                 className="session-time-input" 
+                                 placeholder="14:00"
+                                 onBlur={e => e.target.value && setGoalTime(task.id, selDate, e.target.value)}
+                                 onKeyDown={e => { if (e.key === 'Enter') { setGoalTime(task.id, selDate, e.target.value); e.target.value = '' } }}
+                               />
+                               <span style={{ fontSize: 10, color: 'var(--ink-faint)' }}>Drop card or type hour to spawn ghosts</span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+                    </div>
+                  </div>
+                </div>
+
+                {/* ── Planned / Tomorrow ── */}
+                <div className="board-col">
+                  <div className="board-header">
+                    <span className="board-title">To Plan</span>
+                    <span className="board-count">{plannedTasks.length}</span>
+                  </div>
+                  <div className="board-content">
+                    <div className="add-task-row" style={{ padding: '0 0 12px 0' }}>
+                      <div className="add-task-input-wrap">
+                        <input
+                          className="add-task-input"
+                          type="text"
+                          placeholder="Tomorrow's goal… (use # for tags)"
+                          value={planInput}
+                          onChange={e => {
+                            const val = e.target.value
+                            setPlanInput(val)
+                            const lastWord = val.split(' ').pop()
+                            if (lastWord.startsWith('#')) {
+                              const search = lastWord.slice(1).toLowerCase()
+                              setSuggestedPlanTags(DEFAULT_TAGS.filter(t => t.label.toLowerCase().startsWith(search)))
+                            } else {
+                              setSuggestedPlanTags([])
+                            }
+                          }}
+                          onKeyDown={e => { if (e.key === 'Enter') planForTomorrow(e.target.value.trim()) }}
+                        />
+                        <button className="btn-add-task" onClick={() => planForTomorrow(planInput)} title="Add plan">+</button>
+                        
+                        {suggestedPlanTags.length > 0 && (
+                          <div className="smart-tag-suggestions">
+                            {suggestedPlanTags.map(tag => (
+                              <button key={tag.id} className="suggestion-chip" onClick={() => {
+                                const words = planInput.split(' ')
+                                words.pop()
+                                setPlanInput([...words, `#${tag.label}`, ''].join(' '))
+                                setSuggestedPlanTags([])
+                              }}>
+                                <span className="mini-task-dot" style={{ background: tag.dot, marginRight: 6 }} />
+                                {tag.label}
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </div>
-                  )}
+
+                    <div className="task-list">
+                      {plannedTasks.map((task, i) => {
+                        const status      = getTaskStatus(task)
+                        const isExpanded  = selTaskId === task.id
+                        const taskPalette = { ...TASK_PALETTE[task.colorIdx ?? (i % TASK_PALETTE.length)] }
+                        const taskTags    = (task.tags ?? []).map(id => DEFAULT_TAGS.find(t => t.id === id)).filter(Boolean)
+                        const firstTag    = taskTags[0]
+                        if (firstTag) {
+                          taskPalette.dot = firstTag.dot || firstTag.color
+                          taskPalette.bg  = firstTag.bg
+                          taskPalette.border = firstTag.border || firstTag.dot || firstTag.color
+                        }
+
+                        return (
+                          <div
+                            key={task.id}
+                            className={['task-card', `task-card--${status}`, isExpanded ? 'task-card--selected' : ''].filter(Boolean).join(' ')}
+                            draggable
+                            onDragStart={e => e.dataTransfer.setData('taskId', task.id)}
+                            onClick={() => setSelTaskId(prev => prev === task.id ? null : task.id)}
+                          >
+                            <div className="task-card-top">
+                              <span className="status-dot" style={{ background: taskPalette.dot }} />
+                              {editingTaskId === task.id ? (
+                                <input
+                                  className="task-rename-input"
+                                  autoFocus
+                                  value={editNameValue}
+                                  onChange={e => setEditNameValue(e.target.value)}
+                                  onBlur={() => renameTask(task.id, editNameValue, tomorrowKey)}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter') renameTask(task.id, editNameValue, tomorrowKey)
+                                    if (e.key === 'Escape') setEditingTaskId(null)
+                                  }}
+                                  onClick={e => e.stopPropagation()}
+                                />
+                              ) : (
+                                <span
+                                  className="task-card-name"
+                                  style={{ flex: 1 }}
+                                  onDoubleClick={(e) => {
+                                    e.stopPropagation()
+                                    setEditingTaskId(task.id)
+                                    setEditNameValue(task.name)
+                                  }}
+                                >
+                                  {task.name}
+                                  <button
+                                    className="btn-edit-inline"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      setEditingTaskId(task.id)
+                                      setEditNameValue(task.name)
+                                    }}
+                                    title="Rename task"
+                                  >
+                                    ✎
+                                  </button>
+                                </span>
+                              )}
+                              
+                              <div className="task-card-actions">
+                                <button
+                                  className={`task-heart${isFav ? ' task-heart--active' : ''}`}
+                                  onClick={e => { e.stopPropagation(); toggleFavorite(task.id, tomorrowKey) }}
+                                  title={isFav ? 'Remove' : 'Add to favorites'}
+                                >
+                                  {isFav ? '♥' : '♡'}
+                                </button>
+                                
+                                <button 
+                                  className="btn-card-action-subtle btn-card-del-subtle" 
+                                  onClick={(e) => { e.stopPropagation(); deleteTask(task.id) }}
+                                  title="Delete task"
+                                >
+                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                                </button>
+                              </div>
+                            </div>
+
+                            {isExpanded && (
+                              <div className="task-card-expanded page-fade-in" style={{ padding: '0 12px 12px' }}>
+                                <div className="task-inline-tags">
+                                  {DEFAULT_TAGS.map(tag => {
+                                    const isActive = (task.tags ?? []).includes(tag.id)
+                                    return (
+                                      <button
+                                        key={tag.id}
+                                        className={`tag-pill${isActive ? ' tag-pill--active' : ''}`}
+                                        style={isActive
+                                          ? { background: tag.dot, color: '#fff',   borderColor: tag.dot }
+                                          : { background: '#fff',  color: tag.textColor, borderColor: tag.border || tag.dot }
+                                        }
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          setAllTasks(prev => ({
+                                            ...prev,
+                                            [tomorrowKey]: (prev[tomorrowKey] ?? []).map(t => t.id === task.id ? { ...t, tags: [tag.id] } : t)
+                                          }))
+                                        }}
+                                      >
+                                        {tag.label}
+                                      </button>
+                                    )
+                                  })}
+                                </div>
+                                
+                                <div className="task-card-bottom-actions" style={{ marginTop: 12 }}>
+                                  <button className="btn btn--delete" style={{ width: '100%' }} onClick={(e) => { e.stopPropagation(); deleteTask(task.id) }}>
+                                    ✕ Delete task
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                      {plannedTasks.length === 0 && <div className="board-empty">No future tasks yet.</div>}
+                    </div>
+                  </div>
                 </div>
-              )
-            })}
+              </div>
+            </aside>
+
+            {/* ── TIMELINE ───────────────────────────────────────────────────── */}
+            <Timeline
+              allTasks={allTasks}
+              days={timelineView === 'week'
+                ? (weekDays || [])
+                : [(weekDays || []).find(d => d.key === selDate) ?? { key: selDate, shortLabel: '?', dayNum: '' }]
+              }
+              viewMode={timelineView}
+              now={now}
+              timelineScrollRef={timelineScrollRef}
+              selTaskId={selTaskId}
+              onPlanHour={(hour) => {
+                if (selTaskId) addPlannedSession(selTaskId, selDate, hour)
+              }}
+            />
+
+            <TodayDashboard 
+              activeTask={activeTask}
+              now={now}
+              dayTasks={dayTasks}
+              totalDayMs={totalDayMs}
+              longestSessMs={maxSessMsToday}
+            />
+          </>
+        )}
+
+        {(activeNav === 'insights' || activeNav === 'account') && (
+          <div className="full-view-panel page-fade-in">
+            <RightPanel
+              allTasks={allTasks}
+              favoriteTasks={favoriteTasks}
+              selDate={selDate}
+              now={now}
+              weekStart={weekStart}
+              user={user}
+              templates={templates}
+              onLogout={logout}
+              onAddTemplate={addTemplate}
+              onRemoveTemplate={removeTemplate}
+              isInsights={activeNav === 'insights'}
+              isAccount={activeNav === 'account'}
+            />
           </div>
-        </aside>
-
-        {/* ── TIMELINE ───────────────────────────────────────────────────── */}
-        <Timeline
-          allTasks={tasks}
-          days={timelineView === 'week'
-            ? (weekDays || [])
-            : [(weekDays || []).find(d => d.key === selDate) ?? { key: selDate, shortLabel: '?', dayNum: '' }]
-          }
-          viewMode={timelineView}
-          now={now}
-          timelineScrollRef={timelineScrollRef}
-        />
-
-        {/* ── RIGHT PANEL ────────────────────────────────────────────────── */}
-        <RightPanel
-          allTasks={tasks}
-          favoriteTasks={favoriteTasks}
-          selDate={selDate}
-          now={now}
-          weekStart={weekStart}
-          user={user}
-          templates={templates}
-          onLogout={logout}
-          onAddTemplate={addTemplate}
-          onRemoveTemplate={removeTemplate}
-        />
+        )}
       </div>
     </div>
-  )
+  </div>
+)
 }
