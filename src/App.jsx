@@ -3,12 +3,13 @@ import './App.css'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const HOUR_H         = 64
+const HOUR_H         = 100
 const TIMELINE_START = 0
 const TIMELINE_END   = 24
 const STORAGE_KEY    = 'dl-tasks-v3'
 const AUTH_KEY       = 'dl-auth'
 const TEMPLATES_KEY  = 'dl-templates'
+const NOTES_KEY      = 'dl-daily-notes'
 
 // ── Tags ─────────────────────────────────────────────────────────────────────
 
@@ -43,6 +44,16 @@ const MONTH_FULL = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
 ]
+
+const DAILY_QUOTES = [
+  "Your day was yours. Be proud of the steps you took.",
+  "Happiness is a direction, not a place. Reflect on your journey.",
+  "Every sunset is an opportunity to reset. What was your win today?",
+  "Pause, breathe, and acknowledge how far you've come.",
+  "Small wins are the bricks that build great lives.",
+  "Finish your day happy: you did your best, and that's enough.",
+  "A productive day is not just about tasks; it's about peace of mind."
+];
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 
@@ -441,15 +452,27 @@ function Timeline({ allTasks, days, viewMode, now, timelineScrollRef, selTaskId,
   const nowHours = nowDate.getHours() + nowDate.getMinutes() / 60 + nowDate.getSeconds() / 3600
   const nowTop   = (nowHours - TIMELINE_START) * HOUR_H
 
+  // ── Auto-scroll to now on mount ─────────────────────────────────────────────
+  useEffect(() => {
+    if (timelineScrollRef.current) {
+      const container   = timelineScrollRef.current
+      const containerH  = container.clientHeight
+      // Center the now-line by subtracting half the container height
+      const targetScroll = nowTop - (containerH / 2)
+      container.scrollTop = Math.max(0, targetScroll)
+    }
+  }, [timelineScrollRef]) // Depend on ref just in case, but usually mount is enough
+
   const rawBlocks = useMemo(() => {
     const blocks = []
     days.forEach((day, dayIndex) => {
-      const dayTasks = allTasks[day.key] ?? []
+      const dayTasks = allTasks[day.key] || []
       dayTasks.forEach((task, taskIdx) => {
-        const colorIdx = task.colorIdx ?? (taskIdx % TASK_PALETTE.length)
+        const colorIdx = task.colorIdx ?? (taskIdx % (TASK_PALETTE.length || 1))
         
         // 1. Actual sessions
-        task.sessions.forEach(sess => {
+        const sessArr = task.sessions || []
+        sessArr.forEach(sess => {
           const start  = new Date(sess.startTime)
           const end    = sess.endTime ? new Date(sess.endTime) : new Date(now)
           const startH = start.getHours() + start.getMinutes() / 60 + start.getSeconds() / 3600
@@ -457,6 +480,8 @@ function Timeline({ allTasks, days, viewMode, now, timelineScrollRef, selTaskId,
 
           const clampedStart = Math.max(startH, TIMELINE_START)
           const startY       = (clampedStart - TIMELINE_START) * HOUR_H
+          
+          if (isNaN(startY)) return
 
           let height, endY, realEndY
           if (!sess.endTime) {
@@ -466,9 +491,10 @@ function Timeline({ allTasks, days, viewMode, now, timelineScrollRef, selTaskId,
             realEndY = liveEndY
           } else {
             const clampedEnd = Math.min(endH, TIMELINE_END)
-            if (clampedEnd <= clampedStart) return
+            if (clampedEnd <= clampedStart || isNaN(clampedEnd) || isNaN(clampedStart)) return
             const rawH = (clampedEnd - clampedStart) * HOUR_H
             height   = Math.max(rawH, 2)
+            if (isNaN(height)) return
             endY     = startY + height
             realEndY = startY + rawH
           }
@@ -495,7 +521,7 @@ function Timeline({ allTasks, days, viewMode, now, timelineScrollRef, selTaskId,
             const startY = (clampedStart - TIMELINE_START) * HOUR_H
             const height = (endH - clampedStart) * HOUR_H
 
-            if (height <= 0) return
+            if (height <= 0 || isNaN(height) || isNaN(startY)) return
 
             blocks.push({
               id: p.id || uid(), taskId: task.id, name: task.name,
@@ -540,6 +566,7 @@ function Timeline({ allTasks, days, viewMode, now, timelineScrollRef, selTaskId,
   }, [blocksWithCols])
 
   const hours = useMemo(() => {
+    window.__DEBUG_TIMELINE = { allTasks, days, rawBlocks, blocksWithCols, displayBlocks, numColsForBlock }
     const arr = []
     for (let h = TIMELINE_START; h <= TIMELINE_END; h++) arr.push(h)
     return arr
@@ -589,6 +616,15 @@ function Timeline({ allTasks, days, viewMode, now, timelineScrollRef, selTaskId,
                 <div className="timeline-hour-line" />
               </div>
             ))}
+            {/* Now indicator - inside grid for correct coordinate system */}
+            {days.some(d => d.key === todayKey) && nowTop >= 0 && nowTop <= (TIMELINE_END - TIMELINE_START) * HOUR_H && (
+              <div className="timeline-hour-row timeline-now-row" style={{ top: nowTop, zIndex: 5, pointerEvents: 'none' }}>
+                <span className="timeline-hour-label" style={{ position: 'relative' }}>
+                  <span className="timeline-now-dot" style={{ left: 'auto', right: -6 }} />
+                </span>
+                <div className="timeline-hour-line" style={{ background: '#F43F5E', height: 1 }} />
+              </div>
+            )}
           </div>
 
           <div className="timeline-blocks">
@@ -598,11 +634,13 @@ function Timeline({ allTasks, days, viewMode, now, timelineScrollRef, selTaskId,
 
             {blocksWithCols.flatMap((block, idx) => {
               const numCols  = numColsForBlock[idx]
-              const dayLeft  = block.dayIndex * (100 / days.length)
+              const isPlanned = block.type === 'planned'
+              const day      = days[block.dayIndex]
+              const dayKey   = day?.key || 'unknown'
               const dayWidth = 100 / days.length
               const colWidth = dayWidth / numCols
-              const colLeft  = dayLeft + (block.col * colWidth)
-              const leftPct  = `calc(${colLeft}% + 2px)`
+              const dayLeft  = block.dayIndex * dayWidth
+              const leftPct  = `calc(${dayLeft + (block.col * colWidth)}% + 2px)`
               const widthPct = `calc(${colWidth}% - 4px)`
               const sessionMs = block.endTime ? block.endTime - block.startTime : now - block.startTime
               const display   = displayBlocks[block.id] ?? { displayTop: block.startY, displayHeight: block.height }
@@ -619,13 +657,15 @@ function Timeline({ allTasks, days, viewMode, now, timelineScrollRef, selTaskId,
               }
 
               if (block.isLive) {
+                const dayTasks = allTasks[dayKey] || []
+                const task     = dayTasks.find(t => t.id === block.taskId)
+                const displayMs = task ? getTotalMs(task, now) : sessionMs
+
                 elems.push(
-                  <div key={`ptr-${block.id}`} className="session-pointer"
-                    style={{ top: nowTop + 4, left: leftPct, width: widthPct }}>
-                    <span className="sp-dot" style={{ background: palette.dot, boxShadow: `0 0 0 3px ${palette.border}` }} />
+                  <div key={`ptr-${idx}-${block.id}`} className="session-pointer"
+                    style={{ top: nowTop, left: leftPct, width: widthPct, transform: 'translateY(2px)' }}>
                     <span className="sp-name">{block.name}</span>
-                    <span className="sp-bar" />
-                    <span className="sp-time" style={{ color: palette.dot }}>{formatLive(sessionMs)}</span>
+                    <span className="sp-time" style={{ color: palette.dot }}>{formatLive(displayMs)}</span>
                   </div>
                 )
               }
@@ -635,12 +675,11 @@ function Timeline({ allTasks, days, viewMode, now, timelineScrollRef, selTaskId,
                 ? `${block.name} · ${formatShort(sessionMs)}`
                 : undefined
 
-              const isPlanned = block.type === 'planned'
               const isFocus = selTaskId === block.taskId
 
               elems.push(
                 <div
-                  key={block.id}
+                  key={`sb-${idx}-${block.id}`}
                   className={[
                     'session-block',
                     block.isLive ? 'session-block--live' : '',
@@ -650,19 +689,19 @@ function Timeline({ allTasks, days, viewMode, now, timelineScrollRef, selTaskId,
                   ].filter(Boolean).join(' ')}
                   data-tooltip={tooltipLabel}
                   style={{
-                    top:        displayTop,
-                    height:     displayHeight,
-                    left:       leftPct,
-                    width:      widthPct,
-                    zIndex:     isPlanned ? 1 : 10,
-                    // Force inline style overrides to fix color errors
-                    background: isPlanned ? 'transparent' : (block.isLive ? palette.dot : palette.bg),
-                    borderColor: isPlanned ? palette.dot : palette.border,
-                    borderStyle: isPlanned ? 'dashed' : 'solid',
-                    opacity: isPlanned ? 0.35 : (isFocus ? 1 : 0.8),
+                    top:          displayTop,
+                    height:       displayHeight,
+                    left:         leftPct,
+                    width:        widthPct,
+                    zIndex:       isPlanned ? 1 : 10,
+                    background:   isPlanned ? `linear-gradient(135deg, ${palette.bg} 0%, rgba(255,255,255,0.4) 150%)` : palette.dot,
+                    borderColor:  palette.dot,
+                    borderStyle:  'none', 
+                    opacity:      isPlanned ? 0.8 : (block.isLive ? 0.85 : 0.9),
+                    borderLeft:   isPlanned ? `2px solid ${palette.dot}` : undefined,
                   }}
                 >
-                  {displayHeight >= 20 && (
+                  {!block.isLive && displayHeight >= 20 && (
                     <div className="sb-content" style={{ display: 'flex', flexDirection: 'column', padding: '4px' }}>
                       <span className="sb-name" style={{ 
                         color: isPlanned ? palette.dot : (block.isLive ? '#fff' : palette.dot),
@@ -697,18 +736,7 @@ function Timeline({ allTasks, days, viewMode, now, timelineScrollRef, selTaskId,
               return elems
             })}
 
-            {days.map((day, i) => {
-              if (day.key !== todayKey) return null
-              if (nowTop < 0 || nowTop > (TIMELINE_END - TIMELINE_START) * HOUR_H) return null
-              const dayLeft  = i * (100 / days.length)
-              const dayWidth = 100 / days.length
-              return (
-                <div key={`now-${day.key}`} className="timeline-now-line"
-                  style={{ top: nowTop, left: `${dayLeft}%`, width: `${dayWidth}%` }}>
-                  <div className="timeline-now-dot" style={{ left: '-4px' }} />
-                </div>
-              )
-            })}
+
           </div>
         </div>
       </div>
@@ -1018,10 +1046,13 @@ function RightPanel({
   )
 }
 
-function TodayDashboard({ activeTask, now, dayTasks, totalDayMs, longestSessMs }) {
+function TodayDashboard({ activeTask, now, dayTasks, totalDayMs, longestSessMs, dailyNote, onNoteChange, selDate }) {
   const doneCount = dayTasks.filter(t => t.done).length
   const totalCount = dayTasks.length
   const progressPercent = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0
+
+  const quoteIdx = (selDate || '').split('-').reduce((acc, part) => acc + parseInt(part), 0) % DAILY_QUOTES.length;
+  const dailyQuote = DAILY_QUOTES[quoteIdx] || DAILY_QUOTES[0];
   
   return (
     <aside className="panel-right-today page-fade-in">
@@ -1068,22 +1099,21 @@ function TodayDashboard({ activeTask, now, dayTasks, totalDayMs, longestSessMs }
         </div>
       </div>
 
-      <div className="dash-section">
-        <h3 className="dash-title">Quick Stats</h3>
-        <div className="stats-mini-grid">
-          <div className="stat-mini-box">
-             <span className="mini-label">Peak</span>
-             <span className="mini-val">{longestSessMs > 0 ? formatShort(longestSessMs) : '--'}</span>
+      <div className="dash-section dash-section--highlight">
+        <h3 className="dash-title">Daily Highlight</h3>
+        {!dailyNote && (
+          <div className="daily-quote-fallback page-fade-in" style={{ marginBottom: '16px' }}>
+             <div className="quote-icon">✨</div>
+             <p>"{dailyQuote}"</p>
+             <span>Take a moment to note your win and end your day happy.</span>
           </div>
-          <div className="stat-mini-box">
-             <span className="mini-label">Rate</span>
-             <span className="mini-val">{progressPercent}%</span>
-          </div>
-        </div>
-      </div>
-      
-      <div className="dash-footer-tip">
-        "One step at a time is all it takes to build a legacy."
+        )}
+        <textarea 
+          className="highlight-textarea"
+          placeholder="What made today memorable?"
+          value={dailyNote || ''}
+          onChange={e => onNoteChange(e.target.value)}
+        />
       </div>
     </aside>
   )
@@ -1100,6 +1130,22 @@ export default function App() {
     } catch {}
     return {}
   })
+
+  const [dailyNotes, setDailyNotes] = useState(() => {
+    try {
+      const saved = localStorage.getItem(NOTES_KEY)
+      if (saved) return JSON.parse(saved)
+    } catch {}
+    return {}
+  })
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(allTasks))
+  }, [allTasks])
+
+  useEffect(() => {
+    localStorage.setItem(NOTES_KEY, JSON.stringify(dailyNotes))
+  }, [dailyNotes])
 
   // ── Auth ───────────────────────────────────────────────────────────────────
   const [user,   setUser]   = useState(null)
@@ -1291,13 +1337,17 @@ export default function App() {
 
   // ── Auto-scroll timeline ───────────────────────────────────────────────────
   useEffect(() => {
-    if (selDate !== todayKey) return
     if (!timelineScrollRef.current) return
-    const now = new Date()
-    const h   = now.getHours() + now.getMinutes() / 60
-    const top = (h - TIMELINE_START) * HOUR_H
-    const scrollTarget = Math.max(0, top - timelineScrollRef.current.clientHeight * 0.3)
-    timelineScrollRef.current.scrollTo({ top: scrollTarget, behavior: 'smooth' })
+    const timer = setTimeout(() => {
+      const el  = timelineScrollRef.current
+      if (!el) return
+      const now = new Date()
+      const h   = now.getHours() + now.getMinutes() / 60
+      const top = (h - TIMELINE_START) * HOUR_H
+      const viewH = el.clientHeight || window.innerHeight
+      el.scrollTo({ top: Math.max(0, top - viewH * 0.5), behavior: 'smooth' })
+    }, 150)
+    return () => clearTimeout(timer)
   }, [selDate, todayKey])
 
   // ── Derived ────────────────────────────────────────────────────────────────
@@ -1421,11 +1471,18 @@ export default function App() {
 
   const startTask = useCallback((id) => {
     const now = Date.now()
+    const TWO_MIN = 2 * 60 * 1000
     setAllTasks(prev => ({
       ...prev,
       [selDate]: (prev[selDate] ?? []).map(t => {
         if (t.id === id) {
+          // Close any open sessions first
           const sessions = t.sessions.map(s => s.endTime ? s : { ...s, endTime: now })
+          // Merge only if the last session is recent (started < 2min ago AND ended < 2min ago)
+          const last = sessions[sessions.length - 1]
+          if (last && (now - last.endTime) < TWO_MIN && (now - last.startTime) < TWO_MIN) {
+            return { ...t, sessions: [...sessions.slice(0, -1), { ...last, endTime: null }], done: false }
+          }
           return { ...t, sessions: [...sessions, { id: uid(), startTime: now, endTime: null }], done: false }
         }
         const hasLive = t.sessions.some(s => !s.endTime)
@@ -1494,10 +1551,10 @@ export default function App() {
     setSuggestedPlanTags([])
   }, [tomorrowKey, allTasks])
 
-  const deleteTask = useCallback((id) => {
+  const deleteTask = useCallback((id, dateKey = selDate) => {
     setAllTasks(prev => ({
       ...prev,
-      [selDate]: (prev[selDate] ?? []).filter(t => t.id !== id),
+      [dateKey]: (prev[dateKey] ?? []).filter(t => t.id !== id),
     }))
     setSelTaskId(prev => (prev === id ? null : prev))
   }, [selDate])
@@ -1510,16 +1567,25 @@ export default function App() {
     setEditingTaskId(null)
   }, [selDate])
 
+  const parseTimeStr = (str) => {
+    if (!str) return null
+    const parts = str.match(/\d+/g)
+    if (!parts || parts.length === 0) return null
+    let h = parseInt(parts[0], 10)
+    let m = parts.length > 1 ? parseInt(parts[1], 10) : 0
+    if (isNaN(h) || h < 0 || h > 23) return null
+    if (isNaN(m) || m < 0 || m > 59) return null
+    return { h, m }
+  }
+
   const deleteSession = useCallback((taskId, sessId) => {
     updateTask(taskId, t => ({ ...t, sessions: t.sessions.filter(s => s.id !== sessId) }))
   }, [updateTask])
 
   const updatePlannedSession = useCallback((taskId, planId, key, newVal) => {
-    // newVal is HH:mm
-    const parts = newVal.split(':')
-    if (parts.length !== 2) return
-    const h = parseInt(parts[0], 10), m = parseInt(parts[1], 10)
-    if (isNaN(h) || isNaN(m) || h < 0 || h > 23 || m < 0 || m > 59) return
+    const time = parseTimeStr(newVal)
+    if (!time) return
+    const { h, m } = time
 
     updateTask(taskId, t => ({
       ...t,
@@ -1558,15 +1624,14 @@ export default function App() {
       }
 
       if (sourceKey !== dateKey) {
-        // Move or copy to target date?
-        // User wants to plan for THIS date, so if it's from another date, we add it here
-        if (!next[dateKey].some(t => t.id === taskId)) {
-          next[dateKey] = [updatedTask, ...(next[dateKey] ?? [])]
+        const dayArr = next[dateKey] ?? []
+        if (!dayArr.some(t => t.id === taskId)) {
+          next[dateKey] = [updatedTask, ...dayArr]
         } else {
-          next[dateKey] = next[dateKey].map(t => t.id === taskId ? updatedTask : t)
+          next[dateKey] = dayArr.map(t => t.id === taskId ? updatedTask : t)
         }
       } else {
-        next[dateKey] = next[dateKey].map(t => t.id === taskId ? updatedTask : t)
+        next[dateKey] = (next[dateKey] ?? []).map(t => t.id === taskId ? updatedTask : t)
       }
       return next
     })
@@ -1580,9 +1645,9 @@ export default function App() {
   }, [updateTask])
 
   const setGoalTime = useCallback((taskId, dateKey, timeStr) => {
-    // timeStr like "14:30"
-    const [h, m] = timeStr.split(':').map(Number)
-    if (isNaN(h) || isNaN(m)) return
+    const time = parseTimeStr(timeStr)
+    if (!time) return
+    const { h, m } = time
 
     const d = new Date(dateKey + 'T12:00:00')
     d.setHours(h, m, 0, 0)
@@ -1599,15 +1664,9 @@ export default function App() {
     })
   }, [updateTask])
   const updateSession = useCallback((taskId, sessId, key, newVal) => {
-    // newVal is expected as a string like "14:30"
-    const parts = newVal.split(':')
-    if (parts.length !== 2) return // Wait for complete entry
-
-    const h = parseInt(parts[0], 10)
-    const m = parseInt(parts[1], 10)
-    
-    // Simple validation
-    if (isNaN(h) || isNaN(m) || h < 0 || h > 23 || m < 0 || m > 59) return 
+    const time = parseTimeStr(newVal)
+    if (!time) return
+    const { h, m } = time
 
     updateTask(taskId, task => ({
       ...task,
@@ -1905,6 +1964,7 @@ export default function App() {
                         ) : (
                           <span
                             className="task-card-name"
+                            style={{ flex: 1, textDecoration: status === 'done' ? 'line-through' : 'none', opacity: status === 'done' ? 0.5 : 1 }}
                             onDoubleClick={(e) => {
                               e.stopPropagation()
                               setEditingTaskId(task.id)
@@ -1913,7 +1973,7 @@ export default function App() {
                           >
                             {task.name}
                             <button
-                              className="btn-edit-inline"
+                              className="btn-edit-inline btn-edit-inline--flipped"
                               onClick={(e) => {
                                 e.stopPropagation()
                                 setEditingTaskId(task.id)
@@ -1925,77 +1985,111 @@ export default function App() {
                             </button>
                           </span>
                         )}
-                        <div className="task-card-actions">
+
+                        {isExpanded && (
                           <button
                             className={`task-heart${isFav ? ' task-heart--active' : ''}`}
+                            style={{ marginLeft: 'auto', opacity: 1 }}
                             onClick={e => { e.stopPropagation(); toggleFavorite(task.id) }}
                             title={isFav ? 'Remove from favorites' : 'Add to favorites'}
                           >
                             {isFav ? '♥' : '♡'}
                           </button>
-                          
-                          <button 
-                            className="btn-card-action-subtle btn-card-del-subtle" 
-                            onClick={(e) => { e.stopPropagation(); deleteTask(task.id) }}
-                            title="Delete task"
-                          >
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-                          </button>
-                        </div>
-                      </div>
+                        )}
 
-                      {/* Tag chips */}
-                      {taskTags.length > 0 && (
-                        <div className="task-card-tags">
-                          {taskTags.map(tag => (
-                            <span
-                              key={tag.id}
-                              className="task-tag-chip"
-                              style={{ background: tag.bg, color: tag.textColor, border: `1px solid ${tag.border || tag.dot}` }}
+                        {!isExpanded && (
+                          <div className="task-card-actions-mini">
+                            <button
+                              className={`task-heart${isFav ? ' task-heart--active' : ''}`}
+                              onClick={e => { e.stopPropagation(); toggleFavorite(task.id) }}
+                              title={isFav ? 'Remove from favorites' : 'Add to favorites'}
                             >
-                              {tag.label}
-                            </span>
-                          ))}
-                        </div>
-                      )}
+                              {isFav ? '♥' : '♡'}
+                            </button>
+                            {status === 'active' ? (
+                              <button
+                                className="btn-card-play btn-card-play--active"
+                                onClick={e => { e.stopPropagation(); pauseTask(task.id) }}
+                                title="Pause session"
+                              >
+                                <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="4" width="5" height="16" rx="1"/><rect x="14" y="4" width="5" height="16" rx="1"/></svg>
+                              </button>
+                            ) : (
+                              <button
+                                className="btn-card-play"
+                                onClick={e => { e.stopPropagation(); startTask(task.id) }}
+                                disabled={selDate !== todayKey}
+                                title={totalMs > 0 ? "Resume session" : "Start session"}
+                              >
+                                <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4v16l13-8z"/></svg>
+                              </button>
+                            )}
 
-                      <div className="task-card-meta-row">
-                        <div className="task-card-meta" style={{ color: taskPalette.dot }}>{metaText}</div>
-                        {task.sessions.length > 0 && (
-                          <div className="task-sessions-mini-graph">
-                            {task.sessions.map((s, idx) => {
-                              const dur = (s.endTime ?? now) - s.startTime
-                              const w = Math.min(24, Math.max(3, (dur / 60000) * 0.4))
-                              return (
-                                <div 
-                                  key={idx} 
-                                  className="sess-mini-bar" 
-                                  style={{ width: w, background: taskPalette.dot, opacity: s.endTime ? 0.35 : 0.8 }} 
-                                />
-                              )
-                            })}
+                            {status === 'active' ? (
+                               <button 
+                                  className="btn-card-play btn-card-done-subtle"
+                                  onClick={e => { e.stopPropagation(); doneTask(task.id) }}
+                                  title="Mark as Done"
+                               >
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                               </button>
+                            ) : (
+                              <button 
+                                className="btn-card-action-subtle btn-card-del-subtle" 
+                                onClick={(e) => { e.stopPropagation(); deleteTask(task.id) }}
+                                title="Delete task"
+                              >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                              </button>
+                            )}
                           </div>
                         )}
                       </div>
 
+                      {/* Tag chips */}
+                      <div className="task-card-meta-row">
+                        {taskTags.length > 0 && (
+                          <div className="task-card-tags" style={{ marginTop: 0 }}>
+                            {taskTags.map(tag => (
+                              <span
+                                key={tag.id}
+                                className="task-tag-chip"
+                                style={{ background: tag.bg, color: tag.textColor, border: `1px solid ${tag.border || tag.dot}` }}
+                              >
+                                {tag.label}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginLeft: 'auto' }}>
+                          <div className="task-card-meta" style={{ color: taskPalette.dot }}>{metaText}</div>
+                        </div>
+                      </div>
+
                       {isExpanded && (
-                        <div className="task-card-actions" onClick={e => e.stopPropagation()}>
-                          {status === 'idle' && task.sessions.length === 0 && (
-                            <button className="btn btn--start" onClick={() => startTask(task.id)} disabled={selDate !== toKey(new Date())}>▶ Start</button>
-                          )}
-                          {status === 'idle' && task.sessions.length > 0 && (
-                            <button className="btn btn--start" onClick={() => startTask(task.id)} disabled={selDate !== toKey(new Date())}>↺ Resume</button>
-                          )}
-                          {status === 'active' && (
-                            <>
-                              <button className="btn" onClick={() => { pauseTask(task.id); setSelTaskId(task.id) }}>⏸ Pause</button>
-                              <button className="btn btn--done" onClick={() => doneTask(task.id)}>✓ Done</button>
-                            </>
-                          )}
-                          {status === 'done' && (
-                            <button className="btn" onClick={() => startTask(task.id)} disabled={selDate !== toKey(new Date())}>↺ Reopen</button>
-                          )}
-                          <button className="btn btn--delete" onClick={() => deleteTask(task.id)}>✕ Delete task</button>
+                        <div className="task-card-expanded" onClick={e => e.stopPropagation()}>
+                          
+                          <div className="task-card-expanded-actions-block">
+                            {status === 'idle' && task.sessions.length === 0 && (
+                              <button className="tag-btn btn--start-pill" onClick={() => startTask(task.id)} disabled={selDate !== todayKey}>▶ Start</button>
+                            )}
+                            {status === 'idle' && task.sessions.length > 0 && (
+                              <>
+                                <button className="tag-btn btn--start-pill" onClick={() => startTask(task.id)} disabled={selDate !== todayKey}>↺ Resume</button>
+                                <button className="tag-btn btn--done-pill" onClick={() => doneTask(task.id)}>✓ Done</button>
+                              </>
+                            )}
+                            {status === 'active' && (
+                              <>
+                                <button className="tag-btn" onClick={() => { pauseTask(task.id); setSelTaskId(task.id) }}>⏸ Pause</button>
+                                <button className="tag-btn btn--done-pill" onClick={() => doneTask(task.id)}>✓ Done</button>
+                              </>
+                            )}
+                            {status === 'done' && (
+                              <button className="tag-btn" onClick={() => startTask(task.id)} disabled={selDate !== todayKey}>↺ Reopen</button>
+                            )}
+                            <button className="tag-btn btn--del-pill" onClick={() => deleteTask(task.id)} title="Delete task">✕</button>
+                          </div>
 
                           {/* Sessions editor */}
                           {task.sessions.length > 0 && (
@@ -2165,6 +2259,7 @@ export default function App() {
                       {plannedTasks.map((task, i) => {
                         const status      = getTaskStatus(task)
                         const isExpanded  = selTaskId === task.id
+                        const isFav       = favoriteTasks.includes(task.id)
                         const taskPalette = { ...TASK_PALETTE[task.colorIdx ?? (i % TASK_PALETTE.length)] }
                         const taskTags    = (task.tags ?? []).map(id => DEFAULT_TAGS.find(t => t.id === id)).filter(Boolean)
                         const firstTag    = taskTags[0]
@@ -2200,7 +2295,7 @@ export default function App() {
                               ) : (
                                 <span
                                   className="task-card-name"
-                                  style={{ flex: 1 }}
+                                  style={{ flex: 1, textDecoration: status === 'done' ? 'line-through' : 'none', opacity: status === 'done' ? 0.5 : 1 }}
                                   onDoubleClick={(e) => {
                                     e.stopPropagation()
                                     setEditingTaskId(task.id)
@@ -2233,7 +2328,7 @@ export default function App() {
                                 
                                 <button 
                                   className="btn-card-action-subtle btn-card-del-subtle" 
-                                  onClick={(e) => { e.stopPropagation(); deleteTask(task.id) }}
+                                  onClick={(e) => { e.stopPropagation(); deleteTask(task.id, tomorrowKey) }}
                                   title="Delete task"
                                 >
                                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
@@ -2307,6 +2402,9 @@ export default function App() {
               dayTasks={dayTasks}
               totalDayMs={totalDayMs}
               longestSessMs={maxSessMsToday}
+              dailyNote={dailyNotes[selDate]}
+              onNoteChange={(val) => setDailyNotes(prev => ({ ...prev, [selDate]: val }))}
+              selDate={selDate}
             />
           </>
         )}
