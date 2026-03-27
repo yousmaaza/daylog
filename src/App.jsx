@@ -1567,15 +1567,64 @@ export default function App() {
     setEditingTaskId(null)
   }, [selDate])
 
+  const parseDuration = (str) => {
+    if (!str) return null
+    const s = str.toLowerCase().trim()
+    const hMatch = s.match(/(\d+(?:\.\d+)?)\s*h/)
+    const mMatch = s.match(/(\d+)\s*(m|min)/)
+    let ms = 0
+    if (hMatch) ms += parseFloat(hMatch[1]) * 3600000
+    if (mMatch) ms += parseInt(mMatch[1]) * 60000
+    if (!hMatch && !mMatch) {
+      const val = parseFloat(s)
+      if (!isNaN(val) && val > 0) {
+        // Heuristic: < 10? likely hours. >= 10? likely minutes.
+        if (val < 10) ms = val * 3600000
+        else ms = val * 60000
+      }
+    }
+    return ms > 0 ? ms : null
+  }
+
   const parseTimeStr = (str) => {
     if (!str) return null
-    const parts = str.match(/\d+/g)
-    if (!parts || parts.length === 0) return null
-    let h = parseInt(parts[0], 10)
-    let m = parts.length > 1 ? parseInt(parts[1], 10) : 0
-    if (isNaN(h) || h < 0 || h > 23) return null
-    if (isNaN(m) || m < 0 || m > 59) return null
-    return { h, m }
+    const s = str.trim().toLowerCase()
+    
+    let h = null
+    let m = null
+    let durationMs = 3600000 // default 1h
+
+    // Case 1: HH:MM [Duration]
+    if (s.includes(':')) {
+      const parts = s.split(/\s+/)
+      const timeMatch = parts[0].match(/(\d+):(\d+)/)
+      if (timeMatch) {
+        h = parseInt(timeMatch[1], 10)
+        m = parseInt(timeMatch[2], 10)
+      }
+      if (parts.length > 1) {
+        durationMs = parseDuration(parts.slice(1).join(' ')) || durationMs
+      }
+    } 
+    // Case 2: Just Duration (e.g. 1h, 30m)
+    else if (s.match(/[hm]/) || (!isNaN(parseFloat(s)) && !s.includes(':'))) { // Added !s.includes(':') to differentiate from HH:MM
+      durationMs = parseDuration(s) || durationMs
+      const cur = new Date() // Use new Date() for current time
+      h = cur.getHours()
+      m = cur.getMinutes()
+    }
+    // Case 3: Legacy (just number, e.g., "9" for 9:00, "930" for 9:30)
+    else {
+      const parts = s.match(/\d+/g)
+      if (parts && parts.length > 0) {
+        h = parseInt(parts[0], 10)
+        m = parts.length > 1 ? parseInt(parts[1], 10) : 0
+      }
+    }
+
+    if (h === null || isNaN(h) || h < 0 || h > 23) return null
+    if (m === null || isNaN(m) || m < 0 || m > 59) return null
+    return { h, m, durationMs }
   }
 
   const deleteSession = useCallback((taskId, sessId) => {
@@ -1647,16 +1696,20 @@ export default function App() {
   const setGoalTime = useCallback((taskId, dateKey, timeStr) => {
     const time = parseTimeStr(timeStr)
     if (!time) return
-    const { h, m } = time
+    const { h, m, durationMs } = time
 
     const d = new Date(dateKey + 'T12:00:00')
     d.setHours(h, m, 0, 0)
-    const startTime = d.getTime()
-    const endTime = startTime + 60 * 60 * 1000 // 1h default
+    let startTime = d.getTime()
+    
+    // Shift past goal to start NOW
+    if (dateKey === toKey(new Date()) && startTime < Date.now()) {
+      startTime = Date.now()
+    }
+    const endTime = startTime + durationMs
 
     updateTask(taskId, t => {
-      // For simplicity, we'll replace or add a primary planned session
-      const others = (t.plannedSessions ?? []).filter(p => p.isPrimary !== true)
+      const others = (t.plannedSessions ?? []).filter(p => !p.isPrimary)
       return {
         ...t,
         plannedSessions: [...others, { id: uid(), startTime, endTime, isPrimary: true }]
@@ -2187,16 +2240,16 @@ export default function App() {
                           )}
 
                           <div className="task-goal-row" style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
-                            <div className="task-sessions-header">New Mirror Intent (Goal)</div>
+                            <div className="task-sessions-header">Plan Duration (e.g. 1h, 30m)</div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                                <input 
                                  type="text" 
                                  className="session-time-input" 
-                                 placeholder="14:00"
+                                 placeholder="1h or 14:00"
                                  onBlur={e => e.target.value && setGoalTime(task.id, selDate, e.target.value)}
                                  onKeyDown={e => { if (e.key === 'Enter') { setGoalTime(task.id, selDate, e.target.value); e.target.value = '' } }}
                                />
-                               <span style={{ fontSize: 10, color: 'var(--ink-faint)' }}>Drop card or type hour to spawn ghosts</span>
+                               <span style={{ fontSize: 10, color: 'var(--ink-faint)' }}>Type duration or start time to plan</span>
                             </div>
                           </div>
                         </div>
