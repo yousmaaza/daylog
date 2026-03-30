@@ -427,10 +427,14 @@ function LineChart({ data }) {
 // ── Timeline ─────────────────────────────────────────────────────────────────
 
 function buildColumns(blocks) {
-  const sorted = [...blocks].sort((a, b) => a.startY - b.startY)
-  const cols = []
+  const actuals = blocks.filter(b => b.type === 'actual').sort((a, b) => a.startY - b.startY)
+  const planneds = blocks.filter(b => b.type === 'planned').sort((a, b) => a.startY - b.startY)
+  
+  const cols = [] // Array of columns, each col is an array of blocks
+  const result = []
 
-  return sorted.map(block => {
+  // PASS 1: Actual sessions (Reality defines the lanes)
+  actuals.forEach(block => {
     let colIdx = cols.findIndex(col => {
       const last = col[col.length - 1]
       return last.realEndY <= block.startY + 0.5
@@ -439,9 +443,39 @@ function buildColumns(blocks) {
       colIdx = cols.length
       cols.push([])
     }
-    cols[colIdx].push({ realEndY: block.realEndY })
-    return { ...block, col: colIdx }
+    const positioned = { ...block, col: colIdx }
+    cols[colIdx].push(positioned)
+    result.push(positioned)
   })
+
+  // PASS 2: Planned sessions (Goals snap to reality)
+  planneds.forEach(block => {
+    // 1. Try to find a column with an actual block of the same task that overlaps
+    let colIdx = cols.findIndex(col => 
+      col.some(b => 
+        b.type === 'actual' && 
+        b.taskId === block.taskId &&
+        b.startY < block.realEndY - 0.5 && b.realEndY > block.startY + 0.5
+      )
+    )
+
+    // 2. Fallback: normal fit (avoiding ALL blocks already placed in that column)
+    if (colIdx === -1) {
+      colIdx = cols.findIndex(col => {
+        return !col.some(b => b.startY < block.realEndY - 0.5 && b.realEndY > block.startY + 0.5)
+      })
+    }
+
+    if (colIdx === -1) {
+      colIdx = cols.length
+      cols.push([])
+    }
+    const positioned = { ...block, col: colIdx }
+    cols[colIdx].push(positioned)
+    result.push(positioned)
+  })
+
+  return result
 }
 
 function Timeline({ allTasks, days, viewMode, now, timelineScrollRef, selTaskId, onPlanHour }) {
@@ -645,6 +679,14 @@ function Timeline({ allTasks, days, viewMode, now, timelineScrollRef, selTaskId,
               const sessionMs = block.endTime ? block.endTime - block.startTime : now - block.startTime
               const display   = displayBlocks[block.id] ?? { displayTop: block.startY, displayHeight: block.height }
               const { displayTop, displayHeight } = display
+              const isSameTaskOverlap = isPlanned && blocksWithCols.some(b => 
+                b.id !== block.id && 
+                b.col === block.col && 
+                b.dayIndex === block.dayIndex &&
+                b.taskId === block.taskId &&
+                b.type === 'actual' &&
+                b.startY < block.realEndY - 0.5 && b.realEndY > block.startY + 0.5
+              )
               const elems     = []
               const palette   = { ...TASK_PALETTE[block.colorIdx] }
 
@@ -694,14 +736,14 @@ function Timeline({ allTasks, days, viewMode, now, timelineScrollRef, selTaskId,
                     left:         leftPct,
                     width:        widthPct,
                     zIndex:       isPlanned ? 1 : 10,
-                    background:   isPlanned ? `linear-gradient(135deg, ${palette.bg} 0%, rgba(255,255,255,0.4) 150%)` : palette.dot,
+                    background:   isPlanned ? 'rgba(255,255,255,0.05)' : palette.dot,
                     borderColor:  palette.dot,
-                    borderStyle:  'none', 
-                    opacity:      isPlanned ? 0.8 : (block.isLive ? 0.85 : 0.9),
-                    borderLeft:   isPlanned ? `2px solid ${palette.dot}` : undefined,
+                    borderStyle:  isPlanned ? 'dashed' : 'none', 
+                    borderWidth:  isPlanned ? '1.5px' : '0px',
+                    opacity:      isPlanned ? 0.6 : (block.isLive ? 0.85 : 0.9),
                   }}
                 >
-                  {!block.isLive && displayHeight >= 20 && (
+                  {!block.isLive && displayHeight >= 20 && !isSameTaskOverlap && (
                     <div className="sb-content" style={{ display: 'flex', flexDirection: 'column', padding: '4px' }}>
                       <span className="sb-name" style={{ 
                         color: isPlanned ? palette.dot : (block.isLive ? '#fff' : palette.dot),
@@ -1443,7 +1485,7 @@ export default function App() {
       tags:     finalTags,
       favorite: false,
     }
-    setAllTasks(prev => ({ ...prev, [selDate]: [...(prev[selDate] ?? []), task] }))
+    setAllTasks(prev => ({ ...prev, [selDate]: [task, ...(prev[selDate] ?? [])] }))
     setSelTaskId(task.id)
     setInputValue('')
     setSelectedTag(null)
@@ -1452,11 +1494,14 @@ export default function App() {
   }, [inputValue, selDate, selectedTag, allTasks])
 
   const updateTask = useCallback((id, updater) => {
-    setAllTasks(prev => ({
-      ...prev,
-      [selDate]: (prev[selDate] ?? []).map(t => t.id === id ? updater(t) : t),
-    }))
-  }, [selDate])
+    setAllTasks(prev => {
+      const next = {}
+      Object.keys(prev).forEach(key => {
+        next[key] = prev[key].map(t => t.id === id ? updater(t) : t)
+      })
+      return next
+    })
+  }, [])
 
   // Toggles favorite across ALL dates (not just selDate)
   const toggleFavorite = useCallback((taskId) => {
@@ -1478,12 +1523,30 @@ export default function App() {
         if (t.id === id) {
           // Close any open sessions first
           const sessions = t.sessions.map(s => s.endTime ? s : { ...s, endTime: now })
+          
+          let nextSessions = sessions
+          let finalPlanned = t.plannedSessions ?? []
+
           // Merge only if the last session is recent (started < 2min ago AND ended < 2min ago)
           const last = sessions[sessions.length - 1]
           if (last && (now - last.endTime) < TWO_MIN && (now - last.startTime) < TWO_MIN) {
-            return { ...t, sessions: [...sessions.slice(0, -1), { ...last, endTime: null }], done: false }
+            nextSessions = [...sessions.slice(0, -1), { ...last, endTime: null }]
+          } else {
+            nextSessions = [...sessions, { id: uid(), startTime: now, endTime: null }]
           }
-          return { ...t, sessions: [...sessions, { id: uid(), startTime: now, endTime: null }], done: false }
+
+          // SMART TARGET: Create/Update Ghost Block
+          if (t.goalDurationMs > 0) {
+            const doneToday = nextSessions.filter(s => s.endTime).reduce((acc, s) => acc + (s.endTime - s.startTime), 0)
+            const remaining  = Math.max(0, t.goalDurationMs - doneToday)
+            const active     = nextSessions.find(s => !s.endTime)
+            if (active && remaining > 0) {
+              const others = (t.plannedSessions ?? []).filter(p => !p.isPrimary)
+              finalPlanned = [...others, { id: uid(), startTime: active.startTime, endTime: active.startTime + remaining, isPrimary: true }]
+            }
+          }
+
+          return { ...t, sessions: nextSessions, plannedSessions: finalPlanned, done: false }
         }
         const hasLive = t.sessions.some(s => !s.endTime)
         if (hasLive) return { ...t, sessions: t.sessions.map(s => s.endTime ? s : { ...s, endTime: now }) }
@@ -1546,7 +1609,7 @@ export default function App() {
       createdAt: Date.now(),
       tags: finalTags
     }
-    setAllTasks(prev => ({ ...prev, [tomorrowKey]: [...(prev[tomorrowKey] ?? []), newTask] }))
+    setAllTasks(prev => ({ ...prev, [tomorrowKey]: [newTask, ...(prev[tomorrowKey] ?? [])] }))
     setPlanInput('')
     setSuggestedPlanTags([])
   }, [tomorrowKey, allTasks])
@@ -1696,26 +1759,35 @@ export default function App() {
   const setGoalTime = useCallback((taskId, dateKey, timeStr) => {
     const time = parseTimeStr(timeStr)
     if (!time) return
-    const { h, m, durationMs } = time
+    const { durationMs } = time
 
-    const d = new Date(dateKey + 'T12:00:00')
-    d.setHours(h, m, 0, 0)
-    let startTime = d.getTime()
-    
-    // Shift past goal to start NOW
-    if (dateKey === toKey(new Date()) && startTime < Date.now()) {
-      startTime = Date.now()
-    }
-    const endTime = startTime + durationMs
+    const dArr = allTasks[dateKey] || []
+    const task = dArr.find(t => t.id === taskId)
+    if (!task) return
 
-    updateTask(taskId, t => {
-      const others = (t.plannedSessions ?? []).filter(p => !p.isPrimary)
-      return {
+    const activeSession = task.sessions.find(s => !s.endTime)
+
+    if (activeSession) {
+      // If active, create the ghost IMMEDIATELY starting at the session start
+      const doneBeforeActive = task.sessions.filter(s => s.endTime && s.id !== activeSession.id).reduce((acc, s) => acc + (s.endTime - s.startTime), 0)
+      const remainingTarget = Math.max(0, durationMs - doneBeforeActive)
+
+      updateTask(taskId, t => {
+        const others = (t.plannedSessions ?? []).filter(p => !p.isPrimary)
+        return {
+          ...t,
+          goalDurationMs: durationMs,
+          plannedSessions: [...others, { id: uid(), startTime: activeSession.startTime, endTime: activeSession.startTime + remainingTarget, isPrimary: true }]
+        }
+      })
+    } else {
+      // If inactive, just store the goal, don't show on timeline
+      updateTask(taskId, t => ({
         ...t,
-        plannedSessions: [...others, { id: uid(), startTime, endTime, isPrimary: true }]
-      }
-    })
-  }, [updateTask])
+        goalDurationMs: durationMs
+      }))
+    }
+  }, [allTasks, updateTask])
   const updateSession = useCallback((taskId, sessId, key, newVal) => {
     const time = parseTimeStr(newVal)
     if (!time) return
@@ -2246,10 +2318,17 @@ export default function App() {
                                  type="text" 
                                  className="session-time-input" 
                                  placeholder="1h or 14:00"
+                                 defaultValue={task.goalDurationMs ? formatShort(task.goalDurationMs) : ''}
+                                 key={task.goalDurationMs} 
                                  onBlur={e => e.target.value && setGoalTime(task.id, selDate, e.target.value)}
-                                 onKeyDown={e => { if (e.key === 'Enter') { setGoalTime(task.id, selDate, e.target.value); e.target.value = '' } }}
+                                 onKeyDown={e => { 
+                                   if (e.key === 'Enter') { 
+                                     setGoalTime(task.id, selDate, e.target.value)
+                                     e.target.blur() 
+                                   } 
+                                 }}
                                />
-                               <span style={{ fontSize: 10, color: 'var(--ink-faint)' }}>Type duration or start time to plan</span>
+                               <span style={{ fontSize: 10, color: 'var(--ink-faint)' }}>{task.goalDurationMs ? 'Goal set.' : 'Type duration to set goal'}</span>
                             </div>
                           </div>
                         </div>
